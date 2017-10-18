@@ -4,8 +4,8 @@
 #define mcount_regs  mcount_regs
 
 struct mcount_regs {
-	unsigned long  edx;
-	unsigned long  ecx;
+	unsigned long edx;
+	unsigned long ecx;
 };
 
 #define  ARG1(a)  ((a)->ecx)

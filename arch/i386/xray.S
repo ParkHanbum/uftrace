@@ -3,76 +3,46 @@
 /* callee saved: %rbx, %rbp, %rsp, %r12-r15 */
 /* stack frame: child addr = 0(%rsp), return addr = 8(%rbp) */
 
-.global __xray_entry
-.type __xray_entry, @function
-__xray_entry:
-	.cfi_startproc
-	sub $48, %rsp
-	.cfi_adjust_cfa_offset 48
+#include "utils/asm.h"
 
-	movq %rdi, 40(%rsp)
-	.cfi_offset rdi, -24
-	movq %rsi, 32(%rsp)
-	.cfi_offset rsi, -32
-	movq %rdx, 24(%rsp)
-	.cfi_offset rdx, -40
-	movq %rcx, 16(%rsp)
-	.cfi_offset rcx, -48
-	movq %r8, 8(%rsp)
-	.cfi_offset r8, -56
-	movq %r9, 0(%rsp)
-	.cfi_offset r9, -64
-
-	/* child ip */
-	movq 48(%rsp), %rsi
+GLOBAL(__xray_entry)
+	sub $24, %esp
+	movl %ecx, 20(%esp)
+	movl %edx, 16(%esp)
+	movl %eax, 12(%esp)
+	
 	/* parent ip */
-	lea 56(%rsp), %rdi
+	leal 4(%ebp), %eax
+	movl %eax, 0(%esp)
+	/* child ip */
+	movl 24(%esp), %eax
+	movl %eax, 4(%esp)
 
 	/* mcount_args */
-	movq %rsp, %rdx
-
+	leal 16(%esp), %eax
+	movl %eax, 8(%esp)
+	
 	call xray_entry
 
-	movq 0(%rsp), %r9
-	movq 8(%rsp), %r8
-	movq 16(%rsp), %rcx
-	movq 24(%rsp), %rdx
-	movq 32(%rsp), %rsi
-	movq 40(%rsp), %rdi
+	movl 12(%esp), %eax
+	movl 16(%esp), %edx
+	movl 20(%esp), %ecx
 
-	add $48, %rsp
-	.cfi_adjust_cfa_offset -48
+	add $24, %esp
+	ret
 
-	retq
-	.cfi_endproc
+GLOBAL(__xray_exit)
+	sub $16, %esp
+	movl %edx, 8(%esp)
+	movl %eax, 4(%esp)
 
-.size __xray_entry, .-__xray_entry
-
-
-.global __xray_exit
-.type __xray_exit, @function
-__xray_exit:
-	.cfi_startproc
-	sub $24, %rsp
-	.cfi_def_cfa_offset 24
-
-	movq %rdx, 8(%rsp)
-	.cfi_offset rdx, -16
-	movq %rax, 0(%rsp)
-	.cfi_offset rax, -24
-
-	/* set the first argument of mcount_exit as pointer to return values */
-	movq %rsp, %rdi
+	leal 4(%esp), %eax
+	movl %eax, 0(%esp)
 
 	call xray_exit
 
-	movq 0(%rsp), %rax
-	movq 8(%rsp), %rdx
+	movl 4(%esp), %eax
+	movl 8(%esp), %edx
 
-	add $24, %rsp
-	.cfi_def_cfa_offset 24
-
-	retq
-	.cfi_endproc
-
-.size __xray_exit, .-__xray_exit
+	add $16, %esp
+	ret

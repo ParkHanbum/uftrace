@@ -3,75 +3,61 @@
 .hidden plthook_resolver_addr
 
 ENTRY(plt_hooker)
-	.cfi_startproc
-	/* PLT code already pushed symbol and module indices */
-	.cfi_adjust_cfa_offset 16
-	sub $56, %rsp
-	.cfi_adjust_cfa_offset 56
-	movq %rdi, 48(%rsp)
-	.cfi_offset rdi, -24
-	movq %rsi, 40(%rsp)
-	.cfi_offset rsi, -32
-	movq %rdx, 32(%rsp)
-	.cfi_offset rdx, -40
-	movq %rcx, 24(%rsp)
-	.cfi_offset rcx, -48
-	movq %r8, 16(%rsp)
-	.cfi_offset r8, -56
-	movq %r9, 8(%rsp)
-	.cfi_offset r9, -64
+	sub $24, %esp
+	/* save registers */
+  movl %ecx, 20(%esp)
+	movl %edx, 16(%esp)
 
-	/* child idx */
-	movq 64(%rsp), %rsi
-	/* address of parent ip */
-	lea 72(%rsp), %rdi
-	/* module id */
-	movq 56(%rsp), %rdx
+	/* ret_addr */
+	movl 32(%esp), %eax
+	movl $eax, 0(%esp)
+
+	/* child_idx */
+	movl 28(%esp), %eax
+	movl %eax, 4(%esp)
+	
+	/* module_id */
+	movl 24(%esp), %eax
+	movl %eax, 8(%esp)
+
 	/* mcount_args */
-	lea 8(%rsp), %rcx
+	leal 16(%esp), %eax
+	movl %eax, 12(%esp)
 
 	call plthook_entry
 
-	movq 8(%rsp), %r9
-	movq 16(%rsp), %r8
-	movq 24(%rsp), %rcx
-	movq 32(%rsp), %rdx
-	movq 40(%rsp), %rsi
-	movq 48(%rsp), %rdi
-	add $56, %rsp
-	.cfi_adjust_cfa_offset -56
+	/* restore register */
+	movl 20(%esp), %ecx
+	movl 16(%esp), %edx
 
-	cmpq $0, %rax
-	cmovz plthook_resolver_addr(%rip), %rax
+	add $24, %esp
+	cmpl $0, %eax
+
+	call 2f
+	cmovz plthook_resolver_addr(%eax), %eax
 	jz 1f
 
-	add $16, %rsp /* resolver function needs 2 entries on stack */
-	.cfi_adjust_cfa_offset -16
+	add $8, %esp /* resolver function needs 2 entries on stack */
 1:
-	jmp *%rax
-	.cfi_endproc
+	jmp *%eax
+2:
+	mov (%esp), %eax
+	ret
 END(plt_hooker)
 
 
 ENTRY(plthook_return)
-	.cfi_startproc
-	sub $32, %rsp
-	.cfi_def_cfa_offset 32
-	movq %rdx, 8(%rsp)
-	.cfi_offset rdx, -24
-	movq %rax, 0(%rsp)
-	.cfi_offset rax, -32
-
-	/* set the first argument of plthook_exit as pointer to return values */
-	movq %rsp, %rdi
+	sub $16, %esp
+	movl %edx, 8(%esp)
+	movl %eax, 4(%esp)
+	leal 4(%esp), %eax
+	movl %eax, 0(%esp)
 
 	call plthook_exit
-	movq %rax, 24(%rsp)
+	movl %eax, 12(%esp)
 
-	movq 0(%rsp), %rax
-	movq 8(%rsp), %rdx
-	add $24, %rsp
-	.cfi_def_cfa_offset 8
-	retq
-	.cfi_endproc
+	movl 4(%esp), %eax
+	movl 8(%esp), %edx
+	add $12, %esp
+	ret
 END(plthook_return)

@@ -27,83 +27,54 @@
 #include "utils/asm.h"
 
 GLOBAL(__fentry__)
-	.cfi_startproc
-	/*
-	 * 48 is needed because of the 16-byte
-	 * stack alignment required from GCC7
-	 */
-	sub $48, %rsp
-	.cfi_adjust_cfa_offset 48
+	sub $24, %esp
+	movl %ecx, 20(%esp)
+	movl %edx, 16(%esp)
 
-	movq %rdi, 40(%rsp)
-	.cfi_offset rdi, -24
-	movq %rsi, 32(%rsp)
-	.cfi_offset rsi, -32
-	movq %rdx, 24(%rsp)
-	.cfi_offset rdx, -40
-	movq %rcx, 16(%rsp)
-	.cfi_offset rcx, -48
-	movq %r8, 8(%rsp)
-	.cfi_offset r8, -56
-	movq %r9, 0(%rsp)
-	.cfi_offset r9, -64
-
-	/* child addr */
-	movq 48(%rsp), %rsi
 	/* parent location */
-	lea 56(%rsp), %rdi
+	leal 4(%ebp), %eax
+	movl %eax, 0(%esp)
+	/* child addr */
+	movl 24(%esp), %eax
+	movl %eax, 4(%esp)
 
 	/* mcount_args */
-	movq %rsp, %rdx
+	leal 16(%esp), %eax
+	movl %eax, 8(%esp)
 
 	call mcount_entry
-	cmpq $0, %rax
+	cmpl $0, %eax
 	jne 1f
 
 	/* hijack return address */
-	movabs $fentry_return@GOTOFF, %rdx
-	lea _GLOBAL_OFFSET_TABLE_(%rip), %rcx
-	add %rcx, %rdx
-	movq %rdx, 56(%rsp)
+	movl $fentry_return@GOTOFF, %edx
+	call 2f
+	lea _GLOBAL_OFFSET_TABLE_(%eax), %ecx
+	add %ecx, %edx
+	movl %edx, 24(%esp)
 1:
-	movq 0(%rsp), %r9
-	movq 8(%rsp), %r8
-	movq 16(%rsp), %rcx
-	movq 24(%rsp), %rdx
-	movq 32(%rsp), %rsi
-	movq 40(%rsp), %rdi
+	movl 20(%esp), %ecx
+	movl 16(%esp), %edx
 
-	add $48, %rsp
-	.cfi_adjust_cfa_offset -48
-
-	retq
-	.cfi_endproc
+	add $24, %esp
+	ret
+2:
+	mov (%esp), %eax
+	ret
 END(__fentry__)
 
 
 ENTRY(fentry_return)
-	.cfi_startproc
-	sub  $32, %rsp
-	.cfi_def_cfa_offset 32
+	sub  $16, %esp
+	movl %edx, 4(%esp)
+	movl %eax, 0(%esp)
 
-	movq %rdx, 8(%rsp)
-	.cfi_offset rdx, -24
-	movq %rax, 0(%rsp)
-	.cfi_offset rax, -32
-
-	/* set the first argument of mcount_exit as pointer to return values */
-	movq %rsp, %rdi
-
-	/* returns original parent address */
 	call mcount_exit
-	movq %rax, 24(%rsp)
+	movl %eax, 12(%esp)
 
-	movq 0(%rsp), %rax
-	movq 8(%rsp), %rdx
+	movl 0(%esp), %eax
+	movl 4(%esp), %edx
 
-	add  $24, %rsp
-	.cfi_def_cfa_offset 24
-
-	retq
-	.cfi_endproc
+	add  $12, %esp
+	ret
 END(fentry_return)
