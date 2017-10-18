@@ -67,13 +67,15 @@ END(__fentry__)
 ENTRY(fentry_return)
 	sub  $16, %esp
 	movl %edx, 4(%esp)
+	movl %eax, 8(%esp)
+	leal 4(%esp), %eax
 	movl %eax, 0(%esp)
 
 	call mcount_exit
 	movl %eax, 12(%esp)
 
-	movl 0(%esp), %eax
-	movl 4(%esp), %edx
+	movl 4(%esp), %eax
+	movl 8(%esp), %edx
 
 	add  $12, %esp
 	ret
