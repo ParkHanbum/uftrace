@@ -117,6 +117,7 @@ static void restore_plt_functions(struct plthook_data *pd)
 		for (k = 0; k < ARRAY_SIZE(skip_list); k++) {
 			struct sym *sym = dsymtab->sym_names[i];
 
+			pr_dbg("name compare : %s\t%s\n", sym->name, skip_list[k].name);
 			if (strcmp(sym->name, skip_list[k].name))
 				continue;
 
@@ -751,6 +752,15 @@ unsigned long plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 
 	if (unlikely(special_flag & PLT_FL_SKIP))
 		goto out;
+
+#if defined(__i386__)
+	if (child_idx > 0) {
+		if (child_idx % 8) {
+			pr_err_ns("the malformed child idx : %lx\n", child_idx);
+		}
+		child_idx = child_idx / 8;
+	}
+#endif
 
 	sym = &pd->dsymtab.sym[child_idx];
 	pr_dbg3("[mod: %lx, idx: %d] enter %lx: %s\n", module_id, child_idx, sym->addr, sym->name);

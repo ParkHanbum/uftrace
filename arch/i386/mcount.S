@@ -8,11 +8,11 @@
 
 GLOBAL(mcount)
 	sub $24, %esp
-	movl %ecx, 20(%esp)
-	movl %edx, 16(%esp)	
-	/* save eax register */
+	/* save registers */
+	movl %edx, 20(%esp)
+	movl %ecx, 16(%esp)	
 	movl %eax, 12(%esp)
-	/* parent location */
+	/* stack address contain parent location */
 	leal 4(%ebp), %eax
 	movl %eax, 0(%esp)
 	/* child addr */
@@ -23,10 +23,12 @@ GLOBAL(mcount)
 	movl %eax, 8(%esp)
 
 	call mcount_entry
-	cmpl $0, %eax
 
-	/* restore eax register */
+	/* restore registers */
 	movl 12(%esp), %eax
+	movl 16(%esp), %ecx
+	movl 20(%esp), %edx
+
 	add $24, %esp
 	ret
 END(mcount)
@@ -34,15 +36,17 @@ END(mcount)
 
 ENTRY(mcount_return)
 	sub $16, %esp
-	movl %edx, 4(%esp)
+	movl %edx, 8(%esp)
+	movl %ecx, 4(%esp)
+	leal 4(%esp), %eax
 	movl %eax, 0(%esp)
 
-	/* returns original parent address */
 	call mcount_exit
+	/* returns original parent location */
 	movl %eax, 12(%esp)
 
-	movl 0(%esp), %eax
-	movl 4(%esp), %edx
+	movl 4(%esp), %ecx
+	movl 8(%esp), %edx
 	add $12, %esp
 	ret
 END(mcount_return)

@@ -17,7 +17,7 @@
 static void sdt_handler(int sig, siginfo_t *info, void *arg)
 {
 	ucontext_t *ctx = arg;
-	unsigned long addr = ctx->uc_mcontext.gregs[REG_RIP];
+	unsigned long addr = ctx->uc_mcontext.gregs[REG_EIP];
 	struct mcount_event_info * mei;
 
 	mei = mcount_lookup_event(addr);
@@ -27,7 +27,7 @@ static void sdt_handler(int sig, siginfo_t *info, void *arg)
 	mcount_save_event(mei);
 
 	/* skip the invalid insn and continue */
-	ctx->uc_mcontext.gregs[REG_RIP] = addr + 1;
+	ctx->uc_mcontext.gregs[REG_EIP] = addr + 1;
 }
 
 int mcount_arch_enable_event(struct mcount_event_info *mei)

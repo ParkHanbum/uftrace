@@ -28,16 +28,15 @@
 
 GLOBAL(__fentry__)
 	sub $24, %esp
-	movl %ecx, 20(%esp)
-	movl %edx, 16(%esp)
+	movl %edx, 20(%esp)
+	movl %ecx, 16(%esp)
 
-	/* parent location */
+	/* stack address contain parent location */
 	leal 4(%ebp), %eax
 	movl %eax, 0(%esp)
 	/* child addr */
-	movl 24(%esp), %eax
+	leal 24(%esp), %eax
 	movl %eax, 4(%esp)
-
 	/* mcount_args */
 	leal 16(%esp), %eax
 	movl %eax, 8(%esp)
@@ -47,36 +46,31 @@ GLOBAL(__fentry__)
 	jne 1f
 
 	/* hijack return address */
-	movl $fentry_return@GOTOFF, %edx
-	call 2f
-	lea _GLOBAL_OFFSET_TABLE_(%eax), %ecx
-	add %ecx, %edx
-	movl %edx, 24(%esp)
+	call __x86.get_pc_thunk.ax
+	addl $_GLOBAL_OFFSET_TABLE_, %eax
+	addl $fentry_return@GOTOFF, %eax
+	movl %eax, 24(%esp)
 1:
-	movl 20(%esp), %ecx
-	movl 16(%esp), %edx
+	movl 20(%esp), %edx
+	movl 16(%esp), %ecx
 
 	add $24, %esp
-	ret
-2:
-	mov (%esp), %eax
 	ret
 END(__fentry__)
 
 
 ENTRY(fentry_return)
 	sub  $16, %esp
-	movl %edx, 4(%esp)
-	movl %eax, 8(%esp)
+	movl %edx, 8(%esp)
+	movl %ecx, 4(%esp)
 	leal 4(%esp), %eax
 	movl %eax, 0(%esp)
 
 	call mcount_exit
 	movl %eax, 12(%esp)
 
-	movl 4(%esp), %eax
+	movl 4(%esp), %ecx
 	movl 8(%esp), %edx
-
 	add  $12, %esp
 	ret
 END(fentry_return)
