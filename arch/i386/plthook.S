@@ -3,21 +3,21 @@
 .hidden plthook_resolver_addr
 
 ENTRY(plt_hooker)
-	sub $24, %esp
+	sub $32, %esp
 	/* save registers */
-  movl %ecx, 20(%esp)
-	movl %edx, 16(%esp)
+	movl %edx, 20(%esp)
+	movl %ecx, 16(%esp)
 
-	/* ret_addr */
-	movl 32(%esp), %eax
-	movl $eax, 0(%esp)
+	/* stack address contain parent location */
+	leal 40(%esp), %eax
+	movl %eax, 0(%esp)
 
 	/* child_idx */
-	movl 28(%esp), %eax
+	movl 36(%esp), %eax
 	movl %eax, 4(%esp)
 	
 	/* module_id */
-	movl 24(%esp), %eax
+	movl 32(%esp), %eax
 	movl %eax, 8(%esp)
 
 	/* mcount_args */
@@ -26,38 +26,40 @@ ENTRY(plt_hooker)
 
 	call plthook_entry
 
-	/* restore register */
-	movl 20(%esp), %ecx
-	movl 16(%esp), %edx
+	/* restore registers */
+	movl 16(%esp), %ecx
+	movl 20(%esp), %edx
+	add $32, %esp
 
-	add $24, %esp
 	cmpl $0, %eax
-
-	call 2f
-	cmovz plthook_resolver_addr(%eax), %eax
-	jz 1f
-
-	add $8, %esp /* resolver function needs 2 entries on stack */
-1:
+	jnz 1f
+	/* get address of plthook_resolver_addr */
+	call __x86.get_pc_thunk.ax
+	addl $_GLOBAL_OFFSET_TABLE_, %eax
+	leal plthook_resolver_addr@GOTOFF(%eax), %eax
+	movl (%eax), %eax
 	jmp *%eax
-2:
-	mov (%esp), %eax
-	ret
+1:
+	add $8, %esp
+	jmp *%eax
 END(plt_hooker)
 
 
 ENTRY(plthook_return)
-	sub $16, %esp
-	movl %edx, 8(%esp)
+	sub $32, %esp
+	movl %edx, 12(%esp)
+	movl %ecx, 8(%esp)
 	movl %eax, 4(%esp)
-	leal 4(%esp), %eax
+
+	leal 8(%esp), %eax
 	movl %eax, 0(%esp)
 
 	call plthook_exit
-	movl %eax, 12(%esp)
+	movl %eax, 28(%esp)
 
 	movl 4(%esp), %eax
-	movl 8(%esp), %edx
-	add $12, %esp
+	movl 8(%esp), %ecx
+	movl 12(%esp), %edx
+	add $28, %esp
 	ret
 END(plthook_return)

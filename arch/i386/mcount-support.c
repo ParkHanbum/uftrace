@@ -32,23 +32,11 @@ int mcount_get_register_arg(struct mcount_arg_context *ctx,
 	}
 
 	switch (reg_idx) {
-	case X86_REG_RDI:
+	case X86_REG_ECX:
 		ctx->val.i = ARG1(regs);
 		break;
-	case X86_REG_RSI:
+	case X86_REG_EDX:
 		ctx->val.i = ARG2(regs);
-		break;
-	case X86_REG_RDX:
-		ctx->val.i = ARG3(regs);
-		break;
-	case X86_REG_RCX:
-		ctx->val.i = ARG4(regs);
-		break;
-	case X86_REG_R8:
-		ctx->val.i = ARG5(regs);
-		break;
-	case X86_REG_R9:
-		ctx->val.i = ARG6(regs);
 		break;
 	case X86_REG_XMM0:
 		asm volatile ("movsd %%xmm0, %0\n" : "=m" (ctx->val.v));
@@ -272,5 +260,5 @@ unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 	struct sym *sym;
 
 	sym = &pd->dsymtab.sym[idx];
-	return sym->addr + ARCH_PLTHOOK_ADDR_OFFSET;
+	return sym->addr;
 }

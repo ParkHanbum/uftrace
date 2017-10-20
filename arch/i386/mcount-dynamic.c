@@ -32,7 +32,7 @@ struct arch_dynamic_info {
 
 int mcount_setup_trampoline(struct mcount_dynamic_info *mdi)
 {
-	unsigned char trampoline[] = { 0xff, 0x25, 0x02, 0x00, 0x00, 0x00, 0xcc, 0xcc };
+	unsigned char trampoline[] = { 0xff, 0x60, 0x02, 0x00, 0x00, 0x00, 0xcc, 0xcc };
 	unsigned long fentry_addr = (unsigned long)__fentry__;
 	unsigned long xray_entry_addr = (unsigned long)__xray_entry;
 	unsigned long xray_exit_addr = (unsigned long)__xray_exit;

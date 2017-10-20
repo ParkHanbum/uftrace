@@ -601,6 +601,10 @@ int load_elf_dynsymtab(struct symtab *dsymtab, Elf *elf,
 	else if (ehdr.e_machine == EM_AARCH64) {
 		plt_addr += 16;    /* AARCH64 PLT0 size is 32 */
 	}
+	else if (ehdr.e_machine == EM_386) {
+		plt_entsize += 12;
+		plt_addr += 6; /* size of jump slot */
+	}
 
 	prev_addr = plt_addr;
 

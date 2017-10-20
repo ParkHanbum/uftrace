@@ -675,6 +675,36 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 	rstack->end_time   = 0;
 	rstack->flags      = 0;
 
+#if 0 
+//#if defined(__i386__)
+	struct sym *parent_sym, *child_sym;
+	char *pname, *cname;
+
+	const char *find_main[] = {
+		"__libc_start_main",
+		"main"
+	};
+	unsigned long *libc_start_esp;
+	unsigned long *real_ret;
+
+	parent_sym = find_symtabs(&symtabs, rstack->parent_ip);
+	pname = symbol_getname(parent_sym, rstack->parent_ip);
+	child_sym = find_symtabs(&symtabs, rstack->child_ip);
+	cname = symbol_getname(child_sym, rstack->child_ip);
+
+	/* support i386 legacy code */
+	if (!strcmp(find_main[0], pname)) {
+		if (!strcmp(find_main[1], cname)) {
+			libc_start_esp = (unsigned long *)parent_loc-2;
+			real_ret = *(libc_start_esp)-4;
+			if (*real_ret == *parent_loc) {
+				*real_ret = (unsigned long)mcount_return;
+			}
+		}
+	}
+	
+#endif
+
 	/* hijack the return address */
 	*parent_loc = (unsigned long)mcount_return;
 

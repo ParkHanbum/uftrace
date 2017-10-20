@@ -744,6 +744,16 @@ unsigned long plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 
 	recursion = false;
 
+#if defined(__i386__)
+	if (child_idx > 0) {
+		if (child_idx % 8) {
+			pr_err_ns("the malformed child idx : %lx\n", child_idx);
+		}
+		child_idx = child_idx / 8;
+	}
+#endif
+
+
 	func = bsearch((void *)child_idx, pd->special_funcs, pd->nr_special,
 		       sizeof(*func), idxfind);
 	if (func)
