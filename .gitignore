@@ -31,3 +31,4 @@ TAGS
 tags
 cscope.*
 *.pyc
+misc/debug*

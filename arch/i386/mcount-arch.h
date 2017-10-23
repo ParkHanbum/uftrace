@@ -37,6 +37,12 @@ struct mcount_arch_context {
 	double xmm[ARCH_MAX_FLOAT_REGS];
 };
 
+/*
+#define FIX_PARENT_LOC
+unsigned long * mcount_arch_parent_location(struct symtabs *symtabs,
+								              							unsigned long *parent_loc,
+															              unsigned long child_ip);
+*/
 #define ARCH_PLT0_SIZE  16
 #define ARCH_PLTHOOK_ADDR_OFFSET  6
 

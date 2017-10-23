@@ -1,7 +1,7 @@
 file uftrace
 set breakpoint pending on
 
-b mcount_get_arg
+b setup_jmpbuf_rstack
 #b command_record
 catch exec
 commands
@@ -12,4 +12,4 @@ end
 
 # r record -L. -d xxx --keep-pid --force tests/t-abc
 
-r --keep-pid --force -L. -A "^int_@arg1,arg2" tests/t-exp-int 
+r -L. --keep-pid --force tests/t-longjmp 

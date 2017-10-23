@@ -10,85 +10,67 @@
 #include "libmcount/internal.h"
 #include "utils/filter.h"
 
-int mcount_get_register_arg(struct mcount_arg_context *ctx,
-			    struct uftrace_arg_spec *spec)
+void mcount_get_arg(struct mcount_arg_context *ctx,
+			  struct uftrace_arg_spec *spec)
 {
 	struct mcount_regs *regs = ctx->regs;
 	int reg_idx;
-
-	switch (spec->type) {
-	case ARG_TYPE_REG:
-		reg_idx = spec->reg_idx;
-		break;
-	case ARG_TYPE_INDEX:
-		reg_idx = spec->idx; /* for integer arguments */
-		break;
-	case ARG_TYPE_FLOAT:
-		reg_idx = spec->idx + X86_REG_FLOAT_BASE;
-		break;
-	case ARG_TYPE_STACK:
-	default:
-		return -1;
-	}
-
-	switch (reg_idx) {
-	case X86_REG_ECX:
-		ctx->val.i = ARG1(regs);
-		break;
-	case X86_REG_EDX:
-		ctx->val.i = ARG2(regs);
-		break;
-	case X86_REG_XMM0:
-		asm volatile ("movsd %%xmm0, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM1:
-		asm volatile ("movsd %%xmm1, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM2:
-		asm volatile ("movsd %%xmm2, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM3:
-		asm volatile ("movsd %%xmm3, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM4:
-		asm volatile ("movsd %%xmm4, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM5:
-		asm volatile ("movsd %%xmm5, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM6:
-		asm volatile ("movsd %%xmm6, %0\n" : "=m" (ctx->val.v));
-		break;
-	case X86_REG_XMM7:
-		asm volatile ("movsd %%xmm7, %0\n" : "=m" (ctx->val.v));
-		break;
-	default:
-		return -1;
-	}
-
-	return 0;
-}
-
-void mcount_get_stack_arg(struct mcount_arg_context *ctx,
-			  struct uftrace_arg_spec *spec)
-{
 	int offset;
 
 	switch (spec->type) {
-	case ARG_TYPE_STACK:
-		offset = spec->stack_ofs;
-		break;
-	case ARG_TYPE_INDEX:
-		offset = spec->idx - ARCH_MAX_REG_ARGS;
-		break;
-	case ARG_TYPE_FLOAT:
-		offset = (spec->idx - ARCH_MAX_FLOAT_REGS) * 2 - 1;
-		break;
-	case ARG_TYPE_REG:
-	default:
-		/* should not reach here */
-		pr_err_ns("invalid stack access for arguments\n");
-		break;
+		case ARG_TYPE_STACK:
+			offset = spec->stack_ofs;
+			break;
+		case ARG_TYPE_INDEX:
+			offset = spec->idx;
+			break;
+		case ARG_TYPE_FLOAT:
+			offset = (spec->idx) * 2 - 1;
+			break;
+		case ARG_TYPE_REG:
+			reg_idx = spec->reg_idx;
+			break;
+		default:
+			/* should not reach here */
+			pr_err_ns("invalid stack access for arguments\n");
+			break;
+	}
+
+	if (spec->type == ARG_TYPE_REG) {
+		switch (reg_idx) {
+			case X86_REG_ECX:
+				ctx->val.i = ARG1(regs);
+				break;
+			case X86_REG_EDX:
+				ctx->val.i = ARG2(regs);
+				break;
+			case X86_REG_XMM0:
+				asm volatile ("movsd %%xmm0, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM1:
+				asm volatile ("movsd %%xmm1, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM2:
+				asm volatile ("movsd %%xmm2, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM3:
+				asm volatile ("movsd %%xmm3, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM4:
+				asm volatile ("movsd %%xmm4, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM5:
+				asm volatile ("movsd %%xmm5, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM6:
+				asm volatile ("movsd %%xmm6, %0\n" : "=m" (ctx->val.v));
+				break;
+			case X86_REG_XMM7:
+				asm volatile ("movsd %%xmm7, %0\n" : "=m" (ctx->val.v));
+				break;
+			default:
+				return -1;
+		}
 	}
 
 	if (offset < 1 || offset > 100)
@@ -100,8 +82,7 @@ void mcount_get_stack_arg(struct mcount_arg_context *ctx,
 void mcount_arch_get_arg(struct mcount_arg_context *ctx,
 			 struct uftrace_arg_spec *spec)
 {
-	if (mcount_get_register_arg(ctx, spec) < 0)
-		mcount_get_stack_arg(ctx, spec);
+	mcount_get_arg(ctx, spec);
 }
 
 void mcount_arch_get_retval(struct mcount_arg_context *ctx,
@@ -261,4 +242,82 @@ unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 
 	sym = &pd->dsymtab.sym[idx];
 	return sym->addr;
+}
+
+
+/*
+	For 16-byte stack-alignment, 
+	the main function stores the return address in its stack scope at prologue.
+	When the time comes for the main function to return,
+	1. restore the saved return address from stack.
+	2. After cleaning up the stack.
+	3. Put the return address at the top of the stack and return.
+	4. will be returned.
+
+	080485f8 <main>:
+	80485f8: 8d 4c 24 04           lea    0x4(%esp),%ecx
+	80485fc: 83 e4 f0              and    $0xfffffff0,%esp
+	80485ff: ff 71 fc              pushl  -0x4(%ecx)
+	8048602: 55                    push   %ebp
+	8048603: 89 e5                 mov    %esp,%ebp
+	8048605: 51                    push   %ecx
+	8048606: 83 ec 14              sub    $0x14,%esp
+	8048609: e8 02 fe ff ff        call   8048410 <mcount@plt>
+
+	... ... 
+
+	8048645: 8b 4d fc              mov    -0x4(%ebp),%ecx
+	8048648: c9                    leave
+	8048649: 8d 61 fc              lea    -0x4(%ecx),%esp
+	804864c: c3                    ret
+
+	So, in this case. The return address we want to replace with 
+	mcount_exit is in the stack scope of the main function. 
+	Non a parent located. 
+
+	we search stack for that address. 
+	we will look for it.
+	we will find it, and we will replace it. 
+	GOOD LUCK!
+*/
+unsigned long *mcount_arch_parent_location(struct symtabs *symtabs,
+										             unsigned long *parent_loc, 
+																 unsigned long child_ip)
+{
+	struct sym *parent_sym, *child_sym;
+	char *pname, *cname;
+
+	const char *find_main[] = {
+		"__libc_start_main",
+		"main"
+	};
+	unsigned long ret_addr;
+	unsigned long search_ret_addr;
+
+	pr_dbg("FIND SYMBOL\n");
+	ret_addr = *parent_loc;
+	parent_sym = find_symtabs(&symtabs, ret_addr);
+	pname = symbol_getname(parent_sym, ret_addr);
+	pr_dbg("SYMBOL : %s\n", pname);
+	pr_dbg("FIND CHILD SYMBOL\n");
+	child_sym = find_symtabs(&symtabs, child_ip);
+	cname = symbol_getname(child_sym, child_ip);
+	pr_dbg("SYMBOL : %s\n", cname);
+	
+	// Assuming that this happens only in main.			
+	if (!strcmp(find_main[0], pname)) {
+		if (!strcmp(find_main[1], cname)) {
+			ret_addr = *parent_loc;
+			pr_dbg("FIND RET ADDRESS : %llu\n", ret_addr);
+			for (int i = 0; i < 5; i++ ) {
+				search_ret_addr = (unsigned long **)parent_loc + i;
+				pr_dbg("SEARCHING RET ADDRESS : %llu\n", search_ret_addr);
+				if (search_ret_addr == ret_addr) {
+					parent_loc = parent_loc+i;
+					pr_dbg("MATCH RET ADDRESS : %llu\n", parent_loc);
+				}
+			}
+		} // cname 
+	} // pname
+	return parent_loc;
 }
