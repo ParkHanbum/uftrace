@@ -69,7 +69,9 @@ void mcount_get_arg(struct mcount_arg_context *ctx,
 				asm volatile ("movsd %%xmm7, %0\n" : "=m" (ctx->val.v));
 				break;
 			default:
-				return -1;
+				/* should not reach here */
+				pr_err_ns("invalid register access for arguments\n");
+				break;
 		}
 	}
 
@@ -296,11 +298,11 @@ unsigned long *mcount_arch_parent_location(struct symtabs *symtabs,
 
 	pr_dbg("FIND SYMBOL\n");
 	ret_addr = *parent_loc;
-	parent_sym = find_symtabs(&symtabs, ret_addr);
+	parent_sym = find_symtabs(symtabs, ret_addr);
 	pname = symbol_getname(parent_sym, ret_addr);
 	pr_dbg("SYMBOL : %s\n", pname);
 	pr_dbg("FIND CHILD SYMBOL\n");
-	child_sym = find_symtabs(&symtabs, child_ip);
+	child_sym = find_symtabs(symtabs, child_ip);
 	cname = symbol_getname(child_sym, child_ip);
 	pr_dbg("SYMBOL : %s\n", cname);
 	
@@ -309,8 +311,8 @@ unsigned long *mcount_arch_parent_location(struct symtabs *symtabs,
 		if (!strcmp(find_main[1], cname)) {
 			ret_addr = *parent_loc;
 			pr_dbg("FIND RET ADDRESS : %llu\n", ret_addr);
-			for (int i = 0; i < 5; i++ ) {
-				search_ret_addr = (unsigned long **)parent_loc + i;
+			for (int i = 1; i < 5; i++ ) {
+				search_ret_addr = *(unsigned long *)(parent_loc + i);
 				pr_dbg("SEARCHING RET ADDRESS : %llu\n", search_ret_addr);
 				if (search_ret_addr == ret_addr) {
 					parent_loc = parent_loc+i;

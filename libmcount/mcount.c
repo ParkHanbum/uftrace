@@ -675,39 +675,6 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 	rstack->end_time   = 0;
 	rstack->flags      = 0;
 
-#if defined(__i386__)
-	struct sym *parent_sym, *child_sym;
-	char *pname, *cname;
-
-	const char *find_main[] = {
-		"__libc_start_main",
-		"main"
-	};
-	unsigned long ret_addr;
-	unsigned long search_ret_addr;
-
-	parent_sym = find_symtabs(&symtabs, rstack->parent_ip);
-	pname = symbol_getname(parent_sym, rstack->parent_ip);
-	child_sym = find_symtabs(&symtabs, rstack->child_ip);
-	cname = symbol_getname(child_sym, rstack->child_ip);
-	// Assuming that this happens only in main.			
-	if (!strcmp(find_main[0], pname)) {
-		if (!strcmp(find_main[1], cname)) {
-			ret_addr = *parent_loc;
-			pr_dbg("FIND RET ADDRESS : %llu\n", ret_addr);
-			for (int i = 1; i < 6; i++) {
-				search_ret_addr = (unsigned long **)parent_loc + i;
-				pr_dbg("SEARCHING RET ADDRESS : %llu\n", search_ret_addr);
-				if (*(unsigned long *)search_ret_addr == ret_addr) {
-					parent_loc = parent_loc+i;
-					pr_dbg("MATCH RET ADDRESS : %llu\n", parent_loc);
-				}
-			}
-		} // cname 
-	} // pname
-	
-#endif
-
 	/* hijack the return address */
 	*parent_loc = (unsigned long)mcount_return;
 
