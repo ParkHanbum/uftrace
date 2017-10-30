@@ -25,7 +25,7 @@ void mcount_get_arg(struct mcount_arg_context *ctx,
 			offset = spec->idx;
 			break;
 		case ARG_TYPE_FLOAT:
-			offset = (spec->idx) * 2 - 1;
+			offset = spec->idx;
 			break;
 		case ARG_TYPE_REG:
 			reg_idx = spec->reg_idx;
@@ -93,10 +93,10 @@ void mcount_arch_get_retval(struct mcount_arg_context *ctx,
 	/* type of return value cannot be FLOAT, so check format instead */
 	if (spec->fmt != ARG_FMT_FLOAT)
 		memcpy(ctx->val.v, ctx->retval, spec->size);
-	else if (spec->size == 10) /* for long double type */
-		asm volatile ("fstpt %0\n\tfldt %0" : "=m" (ctx->val.v));
-	else
-		asm volatile ("movsd %%xmm0, %0\n" : "=m" (ctx->val.v));
+	else if (spec->size == 4)  
+		asm volatile ("fstps %0\n\tflds %0" : "=m" (ctx->val.v));
+    else if (spec->size == 8)
+        asm volatile ("fstpl %0\n\tfldl %0" : "=m" (ctx->val.v));
 }
 
 void mcount_save_arch_context(struct mcount_arch_context *ctx)
