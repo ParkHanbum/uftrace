@@ -23,6 +23,7 @@ class TestCase(TestBase):
 
         return TestBase.build(self, name, cflags, ldflags)
 
+
     def runcmd(self):
         argopt = '-A "^int_@arg1,arg2" -R "^int_@retval/i32"'
 
@@ -31,5 +32,10 @@ class TestCase(TestBase):
             # int_mul@arg1 is a 'long long', so we should skip arg2
             argopt  = '-A "int_(add|sub|div)@arg1,arg2" -A "int_mul@arg1/i64,arg3" '
             argopt += '-R "^int_@retval/i32"'
+        
+        elif platform.machine().startswith('i686'):
+            # int_mul@arg1 is a 'long long', so we should skip arg2
+            argopt  = '-A "int_(add|sub|div)@arg1,arg2" -A "int_mul@arg1/i64,arg3" '
+            argopt += '-R "^int_@retval/i32" '
 
         return '%s %s %s' % (TestBase.ftrace, argopt, 't-' + self.name)

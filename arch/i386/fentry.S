@@ -62,21 +62,17 @@ END(__fentry__)
 
 
 ENTRY(fentry_return)
-	sub  $32, %esp
-	movl %edx, 12(%esp)
-	movl %ecx, 8(%esp)
+	sub  $16, %esp
+	movl %edx, 8(%esp)
 	movl %eax, 4(%esp)
-
-	leal 8(%esp), %eax
+	leal 4(%esp), %eax
 	movl %eax, 0(%esp)
 
 	call mcount_exit
-	movl %eax, 28(%esp)
+	movl %eax, 12(%esp)
 
 	movl 4(%esp), %eax
-	movl 8(%esp), %ecx
-	movl 12(%esp), %edx
-
-	add  $28, %esp
+	movl 8(%esp), %edx
+	add  $12, %esp
 	ret
 END(fentry_return)
