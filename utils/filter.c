@@ -113,8 +113,15 @@ struct uftrace_filter *uftrace_match_filter(uint64_t ip, struct rb_root *root,
 		iter = rb_entry(parent, struct uftrace_filter, node);
 
 		if (match_ip(iter, ip)) {
+#if defined(__i386__)
+			__asm__ __volatile__ ("sub $8, %esp\n");
+			__asm__ __volatile__ ("movsd %xmm0, (%esp)\n");
+#endif
 			memcpy(tr, &iter->trigger, sizeof(*tr));
-
+#if defined(__i386__)
+			__asm__ __volatile__ ("movsd (%esp), %xmm0\n");
+			__asm__ __volatile__ ("add $8, %esp\n"); 
+#endif
 			pr_dbg2("filter match: %s\n", iter->name);
 			if (dbg_domain[DBG_FILTER] >= 3)
 				print_trigger(tr);

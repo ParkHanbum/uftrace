@@ -7,9 +7,9 @@
 
 GLOBAL(__xray_entry)
 	sub $32, %esp
-	movl %edx, 20(%esp)
-	movl %ecx, 16(%esp)
-	movl %eax, 12(%esp)
+	movl %edx, 24(%esp)
+	movl %ecx, 20(%esp)
+	movl $0, 16(%esp)
 	
 	/* stack address contain parent location */
 	leal 36(%esp), %eax
@@ -24,9 +24,8 @@ GLOBAL(__xray_entry)
 	
 	call xray_entry
 
-	movl 12(%esp), %eax
-	movl 16(%esp), %ecx
-	movl 20(%esp), %edx
+	movl 20(%esp), %ecx
+	movl 24(%esp), %edx
 
 	add $32, %esp
 	ret

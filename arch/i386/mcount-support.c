@@ -10,39 +10,29 @@
 #include "libmcount/internal.h"
 #include "utils/filter.h"
 
-void mcount_get_arg(struct mcount_arg_context *ctx,
-			  struct uftrace_arg_spec *spec)
-{
-	struct mcount_regs *regs = ctx->regs;
-	int reg_idx;
-	int offset;
+static bool main_ret_found = false;
 
-	switch (spec->type) {
-		case ARG_TYPE_STACK:
-			offset = spec->stack_ofs;
-			break;
-		case ARG_TYPE_INDEX:
-			offset = spec->idx;
-			break;
-		case ARG_TYPE_FLOAT:
-			offset = spec->idx;
-			break;
-		case ARG_TYPE_REG:
-			reg_idx = spec->reg_idx;
-			break;
-		default:
-			/* should not reach here */
-			pr_err_ns("invalid stack access for arguments\n");
-			break;
-	}
+int mcount_get_register_arg(struct mcount_arg_context *ctx, 
+                            struct uftrace_arg_spec *spec)
+{
+    struct mcount_regs *regs = ctx->regs;
+    int reg_idx;
+
+    switch (spec->type) {
+        case ARG_TYPE_REG:
+            reg_idx = spec->reg_idx;
+            break;
+        default:
+            return -1; 
+    }
 
 	if (spec->type == ARG_TYPE_REG) {
 		switch (reg_idx) {
 			case X86_REG_ECX:
-				ctx->val.i = ARG1(regs);
+				ctx->val.i = ARG_REG1(regs);
 				break;
 			case X86_REG_EDX:
-				ctx->val.i = ARG2(regs);
+				ctx->val.i = ARG_REG2(regs);
 				break;
 			case X86_REG_XMM0:
 				asm volatile ("movsd %%xmm0, %0\n" : "=m" (ctx->val.v));
@@ -75,6 +65,30 @@ void mcount_get_arg(struct mcount_arg_context *ctx,
 		}
 	}
 
+    return 0;
+}
+
+void mcount_get_stack_arg(struct mcount_arg_context *ctx,
+                        struct uftrace_arg_spec *spec)
+{
+	int offset;
+
+	switch (spec->type) {
+		case ARG_TYPE_STACK:
+			offset = spec->stack_ofs;
+			break;
+		case ARG_TYPE_INDEX:
+			offset = spec->idx;
+			break;
+		case ARG_TYPE_FLOAT:
+			offset = spec->idx;
+			break;
+		default:
+			/* should not reach here */
+			pr_err_ns("invalid stack access for arguments\n");
+			break;
+	}
+
 	if (offset < 1 || offset > 100)
 		pr_dbg("invalid stack offset: %d\n", offset);
 
@@ -84,7 +98,8 @@ void mcount_get_arg(struct mcount_arg_context *ctx,
 void mcount_arch_get_arg(struct mcount_arg_context *ctx,
 			 struct uftrace_arg_spec *spec)
 {
-	mcount_get_arg(ctx, spec);
+    if (mcount_get_register_arg(ctx, spec) < 0)
+    	mcount_get_stack_arg(ctx, spec);
 }
 
 void mcount_arch_get_retval(struct mcount_arg_context *ctx,
@@ -97,6 +112,8 @@ void mcount_arch_get_retval(struct mcount_arg_context *ctx,
 		asm volatile ("fstps %0\n\tflds %0" : "=m" (ctx->val.v));
     else if (spec->size == 8)
         asm volatile ("fstpl %0\n\tfldl %0" : "=m" (ctx->val.v));
+    else if (spec->size == 10)
+        asm volatile ("fstpt %0\n\tfldt %0" : "=m" (ctx->val.v));
 }
 
 void mcount_save_arch_context(struct mcount_arch_context *ctx)
@@ -243,7 +260,7 @@ unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 	struct sym *sym;
 
 	sym = &pd->dsymtab.sym[idx];
-	return sym->addr;
+	return sym->addr + ARCH_PLTHOOK_ADDR_OFFSET;
 }
 
 
@@ -283,43 +300,48 @@ unsigned long mcount_arch_plthook_addr(struct plthook_data *pd, int idx)
 	GOOD LUCK!
 */
 unsigned long *mcount_arch_parent_location(struct symtabs *symtabs,
-										             unsigned long *parent_loc, 
-																 unsigned long child_ip)
+                                            unsigned long *parent_loc, 
+                                            unsigned long child_ip)
 {
-	struct sym *parent_sym, *child_sym;
-	char *pname, *cname;
+    if(main_ret_found) {
 
-	const char *find_main[] = {
-		"__libc_start_main",
-		"main"
-	};
-	unsigned long ret_addr;
-	unsigned long search_ret_addr;
+    } else {
+        struct sym *parent_sym, *child_sym;
+        char *pname, *cname;
 
-	pr_dbg("FIND SYMBOL\n");
-	ret_addr = *parent_loc;
-	parent_sym = find_symtabs(symtabs, ret_addr);
-	pname = symbol_getname(parent_sym, ret_addr);
-	pr_dbg("SYMBOL : %s\n", pname);
-	pr_dbg("FIND CHILD SYMBOL\n");
-	child_sym = find_symtabs(symtabs, child_ip);
-	cname = symbol_getname(child_sym, child_ip);
-	pr_dbg("SYMBOL : %s\n", cname);
-	
-	// Assuming that this happens only in main.			
-	if (!strcmp(find_main[0], pname)) {
-		if (!strcmp(find_main[1], cname)) {
-			ret_addr = *parent_loc;
-			pr_dbg("FIND RET ADDRESS : %llu\n", ret_addr);
-			for (int i = 1; i < 5; i++ ) {
-				search_ret_addr = *(unsigned long *)(parent_loc + i);
-				pr_dbg("SEARCHING RET ADDRESS : %llu\n", search_ret_addr);
-				if (search_ret_addr == ret_addr) {
-					parent_loc = parent_loc+i;
-					pr_dbg("MATCH RET ADDRESS : %llu\n", parent_loc);
-				}
-			}
-		} // cname 
-	} // pname
+        const char *find_main[] = {
+            "__libc_start_main",
+            "main"
+        };
+        unsigned long ret_addr;
+        unsigned long search_ret_addr;
+
+        pr_dbg("FIND SYMBOL\n");
+        ret_addr = *parent_loc;
+        parent_sym = find_symtabs(symtabs, ret_addr);
+        pname = symbol_getname(parent_sym, ret_addr);
+        pr_dbg("SYMBOL : %s\n", pname);
+        pr_dbg("FIND CHILD SYMBOL\n");
+        child_sym = find_symtabs(symtabs, child_ip);
+        cname = symbol_getname(child_sym, child_ip);
+        pr_dbg("SYMBOL : %s\n", cname);
+        
+        // Assuming that this happens only in main.			
+        if (!strcmp(find_main[0], pname)) {
+            if (!strcmp(find_main[1], cname)) {
+                ret_addr = *parent_loc;
+                pr_dbg("FIND RET ADDRESS : %llu\n", ret_addr);
+                for (int i = 1; i < 5; i++ ) {
+                    search_ret_addr = *(unsigned long *)(parent_loc + i);
+                    pr_dbg("SEARCHING RET ADDRESS : %llu\n", search_ret_addr);
+                    if (search_ret_addr == ret_addr) {
+                        parent_loc = parent_loc+i;
+                        main_ret_found = true;
+                        pr_dbg("MATCH RET ADDRESS : %llu\n", parent_loc);
+                    }
+                }
+            } // cname 
+        } // pname
+    }
 	return parent_loc;
 }

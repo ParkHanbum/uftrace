@@ -5,8 +5,11 @@
 ENTRY(plt_hooker)
 	sub $32, %esp
 	/* save registers */
-	movl %edx, 20(%esp)
-	movl %ecx, 16(%esp)
+	movl %edx, 24(%esp)
+	movl %ecx, 20(%esp)
+	/* this is for ARG1 that using in jmp */
+	movl 44(%esp), %eax
+	movl %eax, 16(%esp)
 
 	/* stack address contain parent location */
 	leal 40(%esp), %eax
@@ -27,8 +30,8 @@ ENTRY(plt_hooker)
 	call plthook_entry
 
 	/* restore registers */
-	movl 16(%esp), %ecx
-	movl 20(%esp), %edx
+	movl 20(%esp), %ecx
+	movl 24(%esp), %edx
 	add $32, %esp
 
 	cmpl $0, %eax

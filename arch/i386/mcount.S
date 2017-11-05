@@ -9,9 +9,9 @@
 GLOBAL(mcount)
 	sub $32, %esp
 	/* save registers */
-	movl %edx, 20(%esp)
-	movl %ecx, 16(%esp)	
-	movl %eax, 12(%esp)
+	movl %edx, 24(%esp)
+	movl %ecx, 20(%esp)	
+	movl $0, 16(%esp)
 	/* parent location */
 	leal 4(%ebp), %eax
 	movl %eax, 0(%esp)
@@ -25,9 +25,8 @@ GLOBAL(mcount)
 	call mcount_entry
 
 	/* restore registers */
-	movl 12(%esp), %eax
-	movl 16(%esp), %ecx
-	movl 20(%esp), %edx
+	movl 20(%esp), %ecx
+	movl 24(%esp), %edx
 	add $32, %esp
 	ret
 END(mcount)

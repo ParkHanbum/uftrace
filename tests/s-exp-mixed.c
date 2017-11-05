@@ -1,3 +1,40 @@
+#ifdef FASTCALL
+__attribute__((fastcall)) 
+double mixed_add(int a, float b)
+{
+	return a + b;
+}
+
+__attribute__((fastcall)) 
+long mixed_sub(void *a, unsigned long b)
+{
+	return a - b;
+}
+
+__attribute__((fastcall)) 
+long long mixed_mul(double a, long long b)
+{
+	return a * b;
+}
+
+
+__attribute__((fastcall))
+long double mixed_div(long long a, long double b)
+{
+	return a / b;
+}
+
+__attribute__((fastcall))
+char * mixed_str(char *a, double b)
+{
+	static char buf[32];
+
+	if (b)
+		snprintf(buf, sizeof(buf), "%.2f", b);
+
+	return b ? buf : "return";
+}
+#else
 double mixed_add(int a, float b)
 {
 	return a + b;
@@ -27,6 +64,7 @@ char * mixed_str(char *a, double b)
 
 	return b ? buf : "return";
 }
+#endif
 
 int main(int argc, char *argv[])
 {

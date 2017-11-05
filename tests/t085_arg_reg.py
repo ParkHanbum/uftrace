@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from runtest import TestBase
+import platform
 
 class TestCase(TestBase):
     def __init__(self):
@@ -19,7 +20,10 @@ class TestCase(TestBase):
         # cygprof doesn't support arguments now
         if cflags.find('-finstrument-functions') >= 0:
             return TestBase.TEST_SKIP
-
+        
+        if platform.machine().startswith('i686'):
+            cflags = '-march=native -m32 -mfpmath=sse -Ofast -flto -pg -O0 -D FASTCALL'
+        
         return TestBase.build(self, name, cflags, ldflags)
 
     def runcmd(self):
@@ -29,12 +33,17 @@ class TestCase(TestBase):
         argopt += '-A "mixed_div@arg1/i64,fparg1/80%stack+1" '
         argopt += '-A "mixed_str@arg1/s%rdi,fparg1%xmm0"'
 
-        import platform
         if platform.machine().startswith('arm'):
             argopt = argopt.replace('%rdi', '%r0')
             argopt = argopt.replace('%rsi', '%r1')
             argopt = argopt.replace('32%xmm0', '32%s0')
             argopt = argopt.replace('%xmm0', '%d0')
             argopt = argopt.replace('fparg1/80%stack+1', 'fparg1/80')
+        elif platform.machine().startswith('i686'):
+            argopt  = '-A "mixed_add@arg1/i32%ecx,fparg1/32%xmm0" '
+            argopt += '-A "mixed_sub@arg1/x%ecx,arg2%edx" '
+            argopt += '-A "mixed_mul@fparg1%xmm0,arg1/i64%stack+3" '
+            argopt += '-A "mixed_div@arg1/i64,fparg1/80%stack+3" '
+            argopt += '-A "mixed_str@arg1/s%ecx,fparg1%xmm0"'
 
         return '%s %s %s' % (TestBase.ftrace, argopt, 't-' + self.name)
