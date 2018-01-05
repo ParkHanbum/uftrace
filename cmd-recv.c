@@ -19,6 +19,11 @@
 #include "utils/utils.h"
 #include "utils/list.h"
 
+
+#define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
+
+static void read_record_mmap(int pfd, int efd, const char *dirname, struct opts* opts);
+
 struct client_data {
 	struct list_head	list;
 	int			sock;
@@ -134,6 +139,8 @@ void send_trace_data(int sock, int tid, void *data, size_t len)
 		{ .iov_base = &msg_tid, .iov_len = sizeof(msg_tid), },
 		{ .iov_base = data,     .iov_len = len, },
 	};
+
+	printf("%x \n", msg.magic);
 
 	pr_dbg2("send UFTRACE_MSG_SEND_DATA\n");
 	if (writev_all(sock, iov, ARRAY_SIZE(iov)) < 0)
@@ -547,6 +554,16 @@ static void handle_client_sock(struct epoll_event *ev, int efd, struct opts *opt
 {
 	int sock = ev->data.fd;
 	struct uftrace_msg msg;
+	char buf[128];
+        struct shmem_list *sl, *tmp;
+        struct tid_list *tl, *pos;
+        struct uftrace_msg_task tmsg;
+        struct uftrace_msg_sess sess;
+        struct uftrace_msg_dlopen dmsg;
+        struct dlopen_list *dlib;
+        char *exename;
+        int lost;
+	char *dirname = "uftrace.data";
 
 	if (ev->events & (EPOLLERR | EPOLLHUP)) {
 		pr_dbg("client socket closed\n");
@@ -554,6 +571,9 @@ static void handle_client_sock(struct epoll_event *ev, int efd, struct opts *opt
 		return;
 	}
 
+	read_record_mmap(sock, efd, dirname, opts);
+	return;
+ 
 	if (read_all(sock, &msg, sizeof(msg)) < 0)
 		pr_err("message recv failed");
 
@@ -561,8 +581,11 @@ static void handle_client_sock(struct epoll_event *ev, int efd, struct opts *opt
 	msg.type  = ntohs(msg.type);
 	msg.len   = ntohl(msg.len);
 
-	if (msg.magic != UFTRACE_MSG_MAGIC)
+
+	printf("%x\n", msg.magic);
+	if (msg.magic != UFTRACE_MSG_MAGIC) {
 		pr_err_ns("invalid message\n");
+	}
 
 	switch (msg.type) {
 	case UFTRACE_MSG_SEND_DIR_NAME:
@@ -594,6 +617,27 @@ static void handle_client_sock(struct epoll_event *ev, int efd, struct opts *opt
 		recv_trace_end(sock, efd);
 		execute_run_cmd(opts->run_cmd);
 		break;
+	case UFTRACE_MSG_SESSION:
+		pr_dbg2("receive UFTRACE_MSG_SESSION\n");
+                if (msg.len < sizeof(sess))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(sock, &sess, sizeof(sess)) < 0)
+                        pr_err("reading pipe failed");
+
+                exename = xmalloc(sess.namelen + 1);
+                if (read_all(sock, exename, sess.namelen) < 0)
+                        pr_err("reading pipe failed");
+                exename[sess.namelen] = '\0';
+
+                memcpy(buf, sess.sid, 16);
+                buf[16] = '\0';
+
+                pr_dbg2("MSG SESSION: %d: %s (%s)\n", sess.task.tid, exename, buf);
+
+                write_session_info(dirname, &sess, exename);
+                free(exename);
+                break;
 	default:
 		pr_dbg("unknown message: %d\n", msg.type);
 		break;
@@ -654,4 +698,285 @@ int command_recv(int argc, char *argv[], struct opts *opts)
 	close(sigfd);
 	close(sock);
 	return 0;
+}
+
+struct dlopen_list {
+	struct list_head list;
+	char *libname;
+};
+struct shmem_list {
+	struct list_head list;
+	char id[SHMEM_NAME_SIZE];
+};
+struct tid_list {
+        struct list_head list;
+        int pid;
+        int tid;
+        bool exited;
+};
+static int shmem_lost_count;
+static LIST_HEAD(tid_list_head);
+static LIST_HEAD(shmem_list_head);
+static LIST_HEAD(shmem_need_unlink);
+static LIST_HEAD(dlopen_libs);
+
+static void add_tid_list(int pid, int tid)
+{
+	struct tid_list *tl;
+
+	tl = xmalloc(sizeof(*tl));
+
+	tl->pid = pid;
+	tl->tid = tid;
+	tl->exited = false;
+
+	/* link to tid_list */
+	list_add(&tl->list, &tid_list_head);
+}
+
+
+static void read_record_mmap(int pfd, int efd, const char *dirname, struct opts* opts)
+{
+        char buf[128];
+        struct shmem_list *sl, *tmp;
+        struct tid_list *tl, *pos;
+        struct uftrace_msg msg;
+        struct uftrace_msg_task tmsg;
+        struct uftrace_msg_sess sess;
+        struct uftrace_msg_dlopen dmsg;
+        struct dlopen_list *dlib;
+        char *exename;
+        int lost;
+
+	int sock = pfd;
+        if (read_all(pfd, &msg, sizeof(msg)) < 0)
+                pr_err("reading pipe failed:");
+	
+	msg.magic = ntohs(msg.magic);
+	msg.type  = ntohs(msg.type);
+	msg.len   = ntohl(msg.len);
+
+        if (msg.magic != UFTRACE_MSG_MAGIC)
+                pr_err_ns("invalid message received: %x\n", msg.magic);
+
+        switch (msg.type) {
+        case UFTRACE_MSG_REC_START:
+                if (msg.len >= SHMEM_NAME_SIZE)
+                        pr_err_ns("invalid message length\n");
+
+                sl = xmalloc(sizeof(*sl));
+
+                if (read_all(pfd, sl->id, msg.len) < 0)
+                        pr_err("reading pipe failed");
+
+                sl->id[msg.len] = '\0';
+                pr_dbg2("MSG START: %s\n", sl->id);
+
+                /* link to shmem_list */
+                list_add_tail(&sl->list, &shmem_list_head);
+                break;
+	case UFTRACE_MSG_REC_END:
+                if (msg.len >= SHMEM_NAME_SIZE)
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, buf, msg.len) < 0)
+                        pr_err("reading pipe failed");
+
+                buf[msg.len] = '\0';
+                pr_dbg2("MSG  END : %s\n", buf);
+
+                /* remove from shmem_list */
+                list_for_each_entry_safe(sl, tmp, &shmem_list_head, list) {
+                        if (!memcmp(sl->id, buf, SHMEM_NAME_SIZE)) {
+                                list_del(&sl->list);
+                                free(sl);
+                                break;
+                        }
+                }
+
+                break;
+
+        case UFTRACE_MSG_TASK_START:
+                if (msg.len != sizeof(tmsg))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+                        pr_err("reading pipe failed");
+
+                pr_dbg2("MSG TASK_START : %d/%d\n", tmsg.pid, tmsg.tid);
+
+                /* check existing tid (due to exec) */
+                list_for_each_entry(pos, &tid_list_head, list) {
+                        if (pos->tid == tmsg.tid) {
+                                break;
+                        }
+                }
+
+                if (list_no_entry(pos, &tid_list_head, list))
+                        add_tid_list(tmsg.pid, tmsg.tid);
+
+		write_task_info(dirname, &tmsg);
+                break;
+
+        case UFTRACE_MSG_TASK_END:
+                if (msg.len != sizeof(tmsg))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+                        pr_err("reading pipe failed");
+
+                pr_dbg2("MSG TASK_END : %d/%d\n", tmsg.pid, tmsg.tid);
+
+                /* mark test exited */
+                list_for_each_entry(pos, &tid_list_head, list) {
+                        if (pos->tid == tmsg.tid) {
+                                pos->exited = true;
+                                break;
+                        }
+                }
+                break;
+
+        case UFTRACE_MSG_FORK_START:
+                if (msg.len != sizeof(tmsg))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+                        pr_err("reading pipe failed");
+
+                pr_dbg2("MSG FORK1: %d/%d\n", tmsg.pid, -1);
+
+                add_tid_list(tmsg.pid, -1);
+                break;
+
+        case UFTRACE_MSG_FORK_END:
+                if (msg.len != sizeof(tmsg))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+                        pr_err("reading pipe failed");
+
+                list_for_each_entry(tl, &tid_list_head, list) {
+                        if (tl->pid == tmsg.pid && tl->tid == -1)
+                                break;
+                }
+
+                if (list_no_entry(tl, &tid_list_head, list)) {
+                        /*
+                         * daemon process has no guarantee that having parent
+                         * pid of 1 anymore due to the systemd, just pick a
+                         * first task which has tid of -1.
+                         */
+                        list_for_each_entry(tl, &tid_list_head, list) {
+                                if (tl->tid == -1) {
+                                        pr_dbg3("override parent of daemon to %d\n"
+,
+                                                tl->pid);
+                                        tmsg.pid = tl->pid;
+
+                                        break;
+                                }
+                        }
+                }
+
+                if (list_no_entry(tl, &tid_list_head, list))
+                        pr_err("cannot find fork pid: %d\n", tmsg.pid);
+
+                tl->tid = tmsg.tid;
+
+                pr_dbg2("MSG FORK2: %d/%d\n", tl->pid, tl->tid);
+
+                write_fork_info(dirname, &tmsg);
+                break;
+
+        case UFTRACE_MSG_LOST:
+                if (msg.len < sizeof(lost))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &lost, sizeof(lost)) < 0)
+                        pr_err("reading pipe failed");
+
+                shmem_lost_count += lost;
+                break;
+
+        case UFTRACE_MSG_DLOPEN:
+                if (msg.len < sizeof(dmsg))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(pfd, &dmsg, sizeof(dmsg)) < 0)
+                        pr_err("reading pipe failed");
+
+                exename = xmalloc(dmsg.namelen + 1);
+                if (read_all(pfd, exename, dmsg.namelen) < 0)
+                        pr_err("reading pipe failed");
+                exename[dmsg.namelen] = '\0';
+
+                pr_dbg2("MSG DLOPEN: %d: %#lx %s\n", dmsg.task.tid, dmsg.base_addr,
+ exename);
+
+                dlib = xmalloc(sizeof(*dlib));
+                dlib->libname = exename;
+                list_add_tail(&dlib->list, &dlopen_libs);
+
+                write_dlopen_info(dirname, &dmsg, exename);
+                /* exename will be freed with the dlib */
+                break;
+
+        case UFTRACE_MSG_FINISH:
+                pr_dbg2("MSG FINISH\n");
+                break;
+
+	case UFTRACE_MSG_SEND_DIR_NAME:
+		pr_dbg2("receive UFTRACE_MSG_SEND_DIR_NAME\n");
+		recv_trace_dir_name(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_DATA:
+		pr_dbg2("receive UFTRACE_MSG_SEND_DATA\n");
+		recv_trace_data(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_KERNEL_DATA:
+		pr_dbg2("receive UFTRACE_MSG_SEND_KERNEL_DATA\n");
+		recv_trace_kernel_data(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_PERF_DATA:
+		pr_dbg2("receive UFTRACE_MSG_SEND_PERF_DATA\n");
+		recv_trace_perf_data(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_INFO:
+		pr_dbg2("receive UFTRACE_MSG_SEND_INFO\n");
+		recv_trace_info(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_META_DATA:
+		pr_dbg2("receive UFTRACE_MSG_SEND_META_DATA\n");
+		recv_trace_metadata(sock, msg.len);
+		break;
+	case UFTRACE_MSG_SEND_END:
+		pr_dbg2("receive UFTRACE_MSG_SEND_END\n");
+		recv_trace_end(sock, efd);
+		execute_run_cmd(opts->run_cmd);
+		break;
+	case UFTRACE_MSG_SESSION:
+		pr_dbg2("receive UFTRACE_MSG_SESSION\n");
+                if (msg.len < sizeof(sess))
+                        pr_err_ns("invalid message length\n");
+
+                if (read_all(sock, &sess, sizeof(sess)) < 0)
+                        pr_err("reading pipe failed");
+
+                exename = xmalloc(sess.namelen + 1);
+                if (read_all(sock, exename, sess.namelen) < 0)
+                        pr_err("reading pipe failed");
+                exename[sess.namelen] = '\0';
+
+                memcpy(buf, sess.sid, 16);
+                buf[16] = '\0';
+
+                pr_dbg2("MSG SESSION: %d: %s (%s)\n", sess.task.tid, exename, buf);
+
+                write_session_info(dirname, &sess, exename);
+                free(exename);
+                break;
+        default:
+                pr_warn("Unknown message type: %u\n", msg.type);
+                break;
+        }
 }

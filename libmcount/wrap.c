@@ -55,8 +55,8 @@ static void send_dlopen_msg(struct mcount_thread_data *mtdp, const char *sess_id
 	};
 	struct uftrace_msg msg = {
 		.magic = UFTRACE_MSG_MAGIC,
-		.type = UFTRACE_MSG_DLOPEN,
-		.len = sizeof(dlop) + dlop.namelen,
+		.type  = UFTRACE_MSG_DLOPEN,
+		.len   = sizeof(dlop) + dlop.namelen,
 	};
 	struct iovec iov[3] = {
 		{ .iov_base = &msg, .iov_len = sizeof(msg), },

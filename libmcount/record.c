@@ -6,7 +6,8 @@
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <pthread.h>
-
+#include <sys/types.h>
+#include <errno.h>
 /* This should be defined before #include "utils.h" */
 #define PR_FMT     "mcount"
 #define PR_DOMAIN  DBG_MCOUNT
@@ -687,16 +688,19 @@ void record_proc_maps(char *dirname, const char *sess_id,
 	char buf[4096];
 	struct uftrace_mmap *prev_map = NULL;
 	char *last_libname = NULL;
+	struct stat sb;
+	int e;
 
 	ifp = fopen("/proc/self/maps", "r");
 	if (ifp == NULL)
 		pr_err("cannot open proc maps file");
 
 	snprintf(buf, sizeof(buf), "%s/sid-%s.map", dirname, sess_id);
-
+	printf("%s\n", buf);
+	
 	ofp = fopen(buf, "w");
 	if (ofp == NULL)
-		pr_err("cannot open for writing maps file");
+		pr_err("cannot open for writing maps file %s\n", buf);
 
 	while (fgets(buf, sizeof(buf), ifp)) {
 		unsigned long start, end;

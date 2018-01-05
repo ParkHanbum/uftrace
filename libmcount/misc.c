@@ -1,6 +1,9 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 
 /* This should be defined before #include "utils.h" */
 #define PR_FMT     "mcount"
@@ -77,24 +80,23 @@ const char *mcount_session_name(void)
 
 void uftrace_send_message(int type, void *data, size_t len)
 {
-	struct uftrace_msg msg = {
-		.magic = UFTRACE_MSG_MAGIC,
-		.type = type,
-		.len = len,
-	};
-	struct iovec iov[2] = {
-		{ .iov_base = &msg, .iov_len = sizeof(msg), },
-		{ .iov_base = data, .iov_len = len, },
-	};
+        struct uftrace_msg msg = {
+                .magic = UFTRACE_MSG_MAGIC,
+                .type  = type,
+                .len   = len,
+        };
+        struct iovec iov[] = {
+                { .iov_base = &msg,     .iov_len = sizeof(msg), },
+                { .iov_base = data,     .iov_len = len, },
+        };
 
 	if (pfd < 0)
 		return;
-
 	len += sizeof(msg);
 	if (writev(pfd, iov, 2) != (ssize_t)len) {
-		if (!mcount_should_stop())
-			pr_err("writing shmem name to pipe");
-	}
+                if (!mcount_should_stop())
+                        pr_err("writing shmem name to pipe");
+        }
 }
 
 void build_debug_domain(char *dbg_domain_str)
