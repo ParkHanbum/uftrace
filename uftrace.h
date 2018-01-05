@@ -174,6 +174,7 @@ struct ftrace_file_handle {
 #define UFTRACE_MODE_DUMP    7
 #define UFTRACE_MODE_GRAPH   8
 #define UFTRACE_MODE_SCRIPT  9
+#define UFTRACE_MODE_DYNAMIC 10
 
 #define UFTRACE_MODE_DEFAULT  UFTRACE_MODE_LIVE
 
@@ -203,6 +204,7 @@ struct opts {
 	int kernel_depth;
 	int max_stack;
 	int port;
+	int pid;
 	int color;
 	int column_offset;
 	int sort_column;
@@ -263,6 +265,9 @@ int command_recv(int argc, char *argv[], struct opts *opts);
 int command_dump(int argc, char *argv[], struct opts *opts);
 int command_graph(int argc, char *argv[], struct opts *opts);
 int command_script(int argc, char *argv[], struct opts *opts);
+int command_dynamic(int argc, char *argv[], int _pid);
+
+
 
 extern volatile bool uftrace_done;
 
