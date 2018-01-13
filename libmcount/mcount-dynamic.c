@@ -1213,8 +1213,8 @@ static void mcount_startup(void)
 	if (event_str)
 		mcount_setup_events(dirname, event_str);
 
-	if (plthook_str)
-		mcount_setup_plthook(mcount_exename, nest_libcall);
+	//if (plthook_str)
+	mcount_setup_plthook(mcount_exename, nest_libcall);
 
 	if (getenv("UFTRACE_KERNEL_PID_UPDATE"))
 		kernel_pid_update = true;
