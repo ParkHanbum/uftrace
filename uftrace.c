@@ -1036,7 +1036,7 @@ int main(int argc, char *argv[])
 		ret = command_script(argc, argv, &opts);
 		break;
 	case UFTRACE_MODE_DYNAMIC:
-		ret = command_dynamic(argc, argv, opts.pid);
+		ret = command_dynamic(argc, argv, &opts);
 		break;
 	case UFTRACE_MODE_INVALID:
 		ret = 1;

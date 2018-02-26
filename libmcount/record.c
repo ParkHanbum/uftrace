@@ -697,21 +697,6 @@ void record_proc_maps(char *dirname, const char *sess_id,
 
 	snprintf(buf, sizeof(buf), "%s/sid-%s.map", dirname, sess_id);
 	printf("%s\n", buf);
-	e = stat(dirname, &sb);
-	if (errno = ENOENT)
-	{
-		printf("The directory does not exist. Creating new directory...\n");
-		// Add more flags to the mode if necessary.
-		e = mkdir(dirname, S_IRWXU);
-		if (e!= 0)
-		{
-			printf("mkdir failed; errno=%d\n",errno);
-		}
-		else
-		{
-			printf("created the directory %s\n",dirname);
-		}
-	}
 	
 	ofp = fopen(buf, "w");
 	if (ofp == NULL)

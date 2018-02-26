@@ -269,6 +269,7 @@ out:
 
 static void mcount_init_file(void)
 {
+	pr_dbg("MOUNT INIT\n");
 	struct sigaction sa = {
 		.sa_sigaction = segv_handler,
 		.sa_flags = SA_SIGINFO,
@@ -285,6 +286,7 @@ static void mcount_init_file(void)
 
 struct mcount_thread_data * mcount_prepare(void)
 {
+	pr_dbg("mcount_thread_data\n");
 	static pthread_once_t once_control = PTHREAD_ONCE_INIT;
 	struct mcount_thread_data *mtdp = &mtd;
 	struct uftrace_msg_task tmsg;
@@ -706,6 +708,7 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
+	pr_dbg("mcount_entry\n");
 	enum filter_result filtered;
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
@@ -1066,6 +1069,7 @@ static void atfork_prepare_handler(void)
 
 static void atfork_child_handler(void)
 {
+	pr_dbg("atfor_child_handler\n");
 	struct mcount_thread_data *mtdp;
 	struct uftrace_msg_task tmsg = {
 		.time = mcount_gettime(),
@@ -1111,9 +1115,11 @@ static void mcount_startup(void)
 	char *plthook_str;
 	char *patch_str;
 	char *event_str;
+	char *uftrace_pid_str;
 	char *dirname;
 	struct stat statbuf;
 	bool nest_libcall;
+	int uftrace_pid;
 
 	if (!(mcount_global_flags & MCOUNT_GFL_SETUP) || mtd.recursion_guard)
 		return;
@@ -1125,7 +1131,7 @@ static void mcount_startup(void)
 
 	if (pthread_key_create(&mtd_key, mtd_dtor))
 		pr_err("cannot create mtd key");
-
+	
 	pipefd_str = getenv("UFTRACE_PIPE");
 	logfd_str = getenv("UFTRACE_LOGFD");
 	debug_str = getenv("UFTRACE_DEBUG");
@@ -1139,8 +1145,16 @@ static void mcount_startup(void)
 	event_str = getenv("UFTRACE_EVENT");
 	script_str = getenv("UFTRACE_SCRIPT");
 	nest_libcall = !!getenv("UFTRACE_NEST_LIBCALL");
-
+	uftrace_pid_str = getenv("UFTRACE_PID");
+	
 	page_size_in_kb = getpagesize() / KB;
+
+	if (uftrace_pid_str) {
+		uftrace_pid = strtol(uftrace_pid_str, NULL, 0);
+		if (uftrace_pid == NULL) {
+			pr_err_ns("ERROR");
+		}
+	} 
 
 	if (logfd_str) {
 		int fd = strtol(logfd_str, NULL, 0);
@@ -1156,16 +1170,12 @@ static void mcount_startup(void)
 		debug = strtol(debug_str, NULL, 0);
 		build_debug_domain(getenv("UFTRACE_DEBUG_DOMAIN"));
 	}
-	
-	// until we can use a environment as parameter, use below hardcode for logging.
-	for (int d = 0; d < DBG_DOMAIN_MAX; d++) {
-		dbg_domain[d] = 3;
-	}
 
 	if (demangle_str)
 		demangler = strtol(demangle_str, NULL, 0);
 
 	pr_dbg("initializing mcount library\n");
+	pr_dbg("uftrace pipe : %s\n", pipefd_str);
 
 	if (color_str)
 		setup_color(strtol(color_str, NULL, 0));
@@ -1173,6 +1183,10 @@ static void mcount_startup(void)
 	if (pipefd_str) {
 		pfd = strtol(pipefd_str, NULL, 0);
 
+		char fd_path[64];
+		snprintf(fd_path, sizeof(fd_path), "/proc/%d/fd/%d", uftrace_pid, pfd);
+		pr_dbg("open uftrace process : %s\n", fd_path);
+		pfd = open(fd_path, O_RDWR);
 		/* minimal sanity check */
 		if (fstat(pfd, &statbuf) < 0 || !S_ISFIFO(statbuf.st_mode)) {
 			pr_dbg("ignore invalid pipe fd: %d\n", pfd);
@@ -1213,8 +1227,8 @@ static void mcount_startup(void)
 	if (event_str)
 		mcount_setup_events(dirname, event_str);
 
-	//if (plthook_str)
-	mcount_setup_plthook(mcount_exename, nest_libcall);
+	if (plthook_str)
+		mcount_setup_plthook(mcount_exename, nest_libcall);
 
 	if (getenv("UFTRACE_KERNEL_PID_UPDATE"))
 		kernel_pid_update = true;
@@ -1230,7 +1244,6 @@ static void mcount_startup(void)
 
 	compiler_barrier();
 	pr_dbg("mcount setup done\n");
-
 	mcount_global_flags &= ~MCOUNT_GFL_SETUP;
 	mtd.recursion_guard = false;
 }
@@ -1299,12 +1312,45 @@ void __visible_default __cyg_profile_func_exit(void *child, void *parent)
 UFTRACE_ALIAS(__cyg_profile_func_exit);
 
 #ifndef UNIT_TEST
+
+static void setup_environ_from_file() {
+	int fd;
+	char buf[1024] = {0,};
+	bool keyflag = false;
+	char* key, *value;
+
+	fd = open("/tmp/uftrace_environ_file", O_RDONLY);
+	
+	if (fd < 0) return -1;
+
+	read(fd, buf, 1024);
+	close(fd);
+
+	char* token = strtok(buf, "=\n");
+	keyflag = true;
+	do {
+		if (!keyflag) {
+			value = token;
+			printf("value %s\n", token);
+			printf("value %s\n", value);
+			setenv(key, value, 1);
+			printf("setenv done\n");
+			keyflag = true;
+		} else {
+			key = token;
+			printf("key %s\n", key);
+			keyflag = false;
+		}
+	} while(token = strtok(NULL, "=\n"));
+}
+
 /*
  * Initializer and Finalizer
  */
 static void __attribute__((constructor))
 mcount_init(void)
 {
+	setup_environ_from_file();
 	mcount_startup();
 }
 

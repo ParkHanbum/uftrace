@@ -102,6 +102,7 @@ static void restore_plt_functions(struct plthook_data *pd)
 	struct symtab *dsymtab = &pd->dsymtab;
 
 	for (i = 0; i < dsymtab->nr_sym; i++) {
+		pr_dbg2("=========================================\n");
 		bool skipped = false;
 		unsigned long plthook_addr;
 		unsigned long resolved_addr;
@@ -141,13 +142,18 @@ static void restore_plt_functions(struct plthook_data *pd)
 
 		resolved_addr = pd->pltgot_ptr[3 + i];
 		plthook_addr = mcount_arch_plthook_addr(pd, i);
+		pr_dbg2("overwrite resolved addr %p to plthook_addr %p\n",
+			resolved_addr, plthook_addr);
 		if (resolved_addr != plthook_addr) {
 			/* save already resolved address and hook it */
 			pd->resolved_addr[i] = resolved_addr;
+			pr_dbg2("origin : %p\n", pd->pltgot_ptr[i+3]);
 			overwrite_pltgot(pd, 3 + i, (void *)plthook_addr);
+			pr_dbg2("overwt : %p\n", pd->pltgot_ptr[i+3]);
 			pr_dbg2("restore [%u] %s: %p\n",
 				i, dsymtab->sym[i].name, resolved_addr);
 		}
+		pr_dbg2("=========================================\n");
 	}
 }
 
@@ -246,8 +252,9 @@ static int find_got(Elf *elf, const char *modname,
 		restore_plt_functions(pd);
 	}
 
+	pr_dbg("hook the plt-resolver to uftrace\n");
+	pr_dbg2("overwt : [%u] %p\t %p\n", 2, pd->pltgot_ptr[2], plt_hooker);
 	overwrite_pltgot(pd, 2, plt_hooker);
-
 	if (bind_now) {
 		mcount_arch_undo_bindnow(elf, pd);
 
@@ -734,6 +741,7 @@ __weak unsigned long mcount_arch_child_idx(unsigned long child_idx)
 unsigned long plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 			    unsigned long module_id, struct mcount_regs *regs)
 {
+	pr_dbg("plthook_entry\n");
 	struct sym *sym;
 	struct mcount_thread_data *mtdp = NULL;
 	struct mcount_ret_stack *rstack;

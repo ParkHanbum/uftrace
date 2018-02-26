@@ -265,7 +265,7 @@ int command_recv(int argc, char *argv[], struct opts *opts);
 int command_dump(int argc, char *argv[], struct opts *opts);
 int command_graph(int argc, char *argv[], struct opts *opts);
 int command_script(int argc, char *argv[], struct opts *opts);
-int command_dynamic(int argc, char *argv[], int _pid);
+int command_dynamic(int argc, char *argv[], struct opts *opts);
 
 
 

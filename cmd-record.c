@@ -19,6 +19,7 @@
 #include <sys/epoll.h>
 #include <fnmatch.h>
 
+#include "cmd-record.h"
 #include "uftrace.h"
 #include "libmcount/mcount.h"
 #include "utils/utils.h"
@@ -329,19 +330,20 @@ static int fill_file_header(struct opts *opts, int status, struct rusage *rusage
 	char elf_ident[EI_NIDENT];
 
 	xasprintf(&filename, "%s/info", opts->dirname);
-	pr_dbg3("fill header (metadata) info in %s\n", filename);
+	pr_dbg("fill header (metadata) info in %s\n", filename);
 
 	fd = open(filename, O_WRONLY | O_CREAT| O_TRUNC, 0644);
 	if (fd < 0)
 		pr_err("cannot open info file");
-
+	pr_dbg("DEBUG#0_0\n");
 	efd = open(opts->exename, O_RDONLY);
+	pr_dbg("DEBUG %d \t %s\n", efd, opts->exename);
 	if (efd < 0)
 		goto close_fd;
 
 	if (read(efd, elf_ident, sizeof(elf_ident)) < 0)
 		goto close_efd;
-
+	pr_dbg("DEBUG#0_1\n");
 	strncpy(hdr.magic, UFTRACE_MAGIC_STR, UFTRACE_MAGIC_LEN);
 	hdr.version = UFTRACE_FILE_VERSION;
 	hdr.header_size = sizeof(hdr);
@@ -355,11 +357,12 @@ static int fill_file_header(struct opts *opts, int status, struct rusage *rusage
 
 	if (write(fd, &hdr, sizeof(hdr)) != (int)sizeof(hdr))
 		pr_err("writing header info failed");
-
+	pr_dbg("DEBUG#0_2\n");
 	fill_uftrace_info(&hdr.info_mask, fd, opts, status,
 			  rusage, elapsed_time);
 
 try_write:
+	pr_dbg("DEBUG#1\n");
 	ret = pwrite(fd, &hdr, sizeof(hdr), 0);
 	if (ret != (int)sizeof(hdr)) {
 		static int retry = 0;
@@ -374,8 +377,10 @@ try_write:
 	ret = 0;
 
 close_efd:
+	pr_dbg("DEBUG#1\n");
 	close(efd);
 close_fd:
+	pr_dbg("DEBUG#2\n");
 	close(fd);
 	free(filename);
 
@@ -972,8 +977,10 @@ static void read_record_mmap(int pfd, const char *dirname, int bufsize)
 	char *exename;
 	int lost;
 
-	if (read_all(pfd, &msg, sizeof(msg)) < 0)
-		pr_err("reading pipe failed:");
+	if (read_all(pfd, &msg, sizeof(msg)) < 0) {
+		pr_dbg("reading pipe failed:");
+		return;
+	}
 
 	if (msg.magic != UFTRACE_MSG_MAGIC)
 		pr_err_ns("invalid message received: %x\n", msg.magic);
@@ -1282,6 +1289,8 @@ static void save_session_symbols(struct opts *opts)
 	int i, maps;
 
 	maps = scandir(opts->dirname, &map_list, filter_map, alphasort);
+	pr_dbg("[save_session] %s\n", opts->dirname);
+	
 	if (maps <= 0)
 		pr_err("cannot find map files");
 
@@ -1790,7 +1799,7 @@ int do_main_loop(int pfd[2], int ready, struct opts *opts, int pid)
 			.events = POLLIN,
 		};
 
-		ret = poll(&pollfd, 1, 1000);
+		ret = poll(&pollfd, 1, 10000);
 		if (ret < 0 && errno == EINTR)
 			continue;
 		if (ret < 0)
@@ -1799,8 +1808,15 @@ int do_main_loop(int pfd[2], int ready, struct opts *opts, int pid)
 		if (pollfd.revents & POLLIN)
 			read_record_mmap(pfd[0], opts->dirname, opts->bufsize);
 
-		if (pollfd.revents & (POLLERR | POLLHUP))
+		if (pollfd.revents & POLLERR) {
+			pr_dbg("POLLERR\n");
 			break;
+		}
+
+		if (pollfd.revents & POLLHUP) {
+			pr_dbg("POLLHUP\n");
+			break;
+		}
 	}
 
 	ret = stop_tracing(&wd, opts);

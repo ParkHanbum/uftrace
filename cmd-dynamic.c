@@ -1,1694 +1,615 @@
-/*
- * ftrace (Function trace) local execution tracing 
- * <Ryan.Oneill@LeviathanSecurity.com>
- */
 #include <stdio.h>
-#include "uftrace.h"
-#include <ctype.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/ptrace.h>
-#include <elf.h>
-#include <sys/mman.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/wait.h>
-#include <sys/user.h>
+#include <poll.h>
+#include <assert.h>
+#include <dirent.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/reg.h>
-#include <stdarg.h>
+#include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <sys/eventfd.h>
+#include <sys/resource.h>
+#include <sys/epoll.h>
+#include <fnmatch.h>
+#include <linux/limits.h>
 
+#include "uftrace.h"
+#include "cmd-record.h"
+#include "libmcount/mcount.h"
+#include "utils/utils.h"
+#include "utils/symbol.h"
+#include "utils/list.h"
+#include "utils/filter.h"
+#include "utils/kernel.h"
+#include "utils/perf.h"
 
-/*
- * For our color coding output
- */
-#define WHITE "\x1B[37m"
-#define RED  "\x1B[31m"
-#define GREEN  "\x1B[32m"
-#define YELLOW  "\x1B[33m"
-#define DEFAULT_COLOR  "\x1B[0m"
+#define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
-#define MAX_SYMS 8192 * 2
-
-/*
- * On 32bit systems should be set:
- * export FTRACE_ARCH=32
- */
-#define FTRACE_ENV "FTRACE_ARCH"
-
-#define MAX_ADDR_SPACE 256 
-#define MAXSTR 512
-
-#define TEXT_SPACE  0
-#define DATA_SPACE  1
-#define STACK_SPACE 2
-#define HEAP_SPACE  3
-
-#define CALLSTACK_DEPTH 0xf4240
-
-
-struct branch_instr {
-	char *mnemonic;
-	uint8_t opcode;
+struct shmem_list {
+	struct list_head list;
+	char id[SHMEM_NAME_SIZE];
 };
 
-	
-#define BRANCH_INSTR_LEN_MAX 5
+static LIST_HEAD(shmem_list_head);
+static LIST_HEAD(shmem_need_unlink);
 
-/*
- * Table for (non-call) branch instructions used 
- * in our control flow analysis.
- */
-struct branch_instr branch_table[64] = {
-			{"jo",  0x70}, 
-			{"jno", 0x71},  {"jb", 0x72},  {"jnae", 0x72},  {"jc", 0x72},  {"jnb", 0x73},
-			{"jae", 0x73},  {"jnc", 0x73}, {"jz", 0x74},    {"je", 0x74},  {"jnz", 0x75},
-			{"jne", 0x75},  {"jbe", 0x76}, {"jna", 0x76},   {"jnbe", 0x77}, {"ja", 0x77},
-			{"js",  0x78},  {"jns", 0x79}, {"jp", 0x7a},	{"jpe", 0x7a}, {"jnp", 0x7b},
-			{"jpo", 0x7b},  {"jl", 0x7c},  {"jnge", 0x7c},  {"jnl", 0x7d}, {"jge", 0x7d},
-			{"jle", 0x7e},  {"jng", 0x7e}, {"jnle", 0x7f},  {"jg", 0x7f},  {"jmp", 0xeb},
-			{"jmp", 0xe9},  {"jmpf", 0xea}, {NULL, 0}
-		};
-
-struct elf_section_range {
-	char *sh_name;
-	unsigned long sh_addr;
-	unsigned int sh_size;
+struct buf_list {
+	struct list_head list;
+	int tid;
+	void *shmem_buf;
 };
 
-struct { 
-	int stripped;
-	int callsite;
-	int showret;
-	int attach;
-	int verbose;
-	int elfinfo;
-	int typeinfo; //imm vs. ptr
-	int getstr;
-	int arch;
-	int cflow;
-} opts;
+static LIST_HEAD(buf_free_list);
+static LIST_HEAD(buf_write_list);
 
-struct elf64 {
-	Elf64_Ehdr *ehdr;
-        Elf64_Phdr *phdr;
-        Elf64_Shdr *shdr;
-        Elf64_Sym  *sym;
-        Elf64_Dyn  *dyn;
+/* currently active writers */
+static LIST_HEAD(writer_list);
 
-	char *StringTable;
-	char *SymStringTable;
-};
 
-struct elf32 {
-	Elf32_Ehdr *ehdr;
-	Elf32_Phdr *phdr;
-	Elf32_Shdr *shdr;
-	Elf32_Sym  *sym;
-	Elf32_Dyn  *dyn;
-	
-	char *StringTable;
-	char *SymStringTable;
-	
-};
+static bool has_perf_event;
+static char absolute_file_path[PATH_MAX];
 
-struct address_space {
-	unsigned long svaddr;
-	unsigned long evaddr;
-	unsigned int size;
-	int count;
-};
-
-struct syms {
-	char *name;
-	unsigned long value;
-};
-
-typedef struct breakpoint {
-	unsigned long vaddr;
-	long orig_code;
-} breakpoint_t;
-
-typedef struct calldata {
-		char *symname;
-		char *string;
-		unsigned long vaddr;
-		unsigned long retaddr;
-	//	unsigned int depth;
-		breakpoint_t breakpoint;
-} calldata_t;
-
-typedef struct callstack {
-	calldata_t *calldata;
-	unsigned int depth; 
-} callstack_t;
-
-struct call_list {
-	char *callstring;
-	struct call_list *next;
-};
-
-#define MAX_SHDRS 256
-
-struct handle {
-	char *path;
-	char **args;
-	uint8_t *map;
-	struct elf32 *elf32;
-	struct elf64 *elf64;
-	struct elf_section_range sh_range[MAX_SHDRS];
-	struct syms lsyms[MAX_SYMS]; //local syms
-	struct syms dsyms[MAX_SYMS]; //dynamic syms
-	char *libnames[256];
-	int lsc; //lsyms count
-	int dsc; // dsyms count
-	int lnc; //libnames count
-	int shdr_count;
-	int pid;
-};
-
-int global_pid;
-
-void load_elf_section_range(struct handle *);
-void get_address_space(struct address_space *, int, char *);
-void MapElf32(struct handle *);
-void MapElf64(struct handle *);
-void *HeapAlloc(unsigned int);
-char *get_section_by_range(struct handle *, unsigned long);
-
-void set_breakpoint(callstack_t *callstack)
+static bool check_linux_perf_event(char *events)
 {
-  	long orig = ptrace(PTRACE_PEEKTEXT, global_pid, callstack->calldata[callstack->depth].retaddr);
-	long trap;
-	
-	trap = (orig & ~0xff) | 0xcc;
-	if (opts.verbose)
-		printf("[+] Setting breakpoint on 0x%lx\n", callstack->calldata[callstack->depth].retaddr);
-
-	ptrace(PTRACE_POKETEXT, global_pid, callstack->calldata[callstack->depth].retaddr, trap);
-	callstack->calldata[callstack->depth].breakpoint.orig_code = orig;
-	callstack->calldata[callstack->depth].breakpoint.vaddr = callstack->calldata[callstack->depth].retaddr;
-
-}
-
-void remove_breakpoint(callstack_t *callstack)
-{
-	if (opts.verbose)
-		printf("[+] Removing breakpoint from 0x%lx\n", callstack->calldata[callstack->depth].retaddr);
-	
-	ptrace(PTRACE_POKETEXT, global_pid, 
-	callstack->calldata[callstack->depth].retaddr, callstack->calldata[callstack->depth].breakpoint.orig_code);
-}
-
-/*
- * Simple array implementation of stack
- * to keep track of function depth and return values
- */
-
-void callstack_init(callstack_t *callstack)
-{
-	callstack->calldata = (calldata_t *)HeapAlloc(sizeof(calldata_t) * CALLSTACK_DEPTH);
-	callstack->depth = -1; // 0 is first element
-
-}
-
-void callstack_push(callstack_t *callstack, calldata_t *calldata)
-{
-	memcpy(&callstack->calldata[++callstack->depth], calldata, sizeof(calldata_t));
-	set_breakpoint(callstack);
-}
-
-calldata_t * callstack_pop(callstack_t *callstack)
-{
-	if (callstack->depth == -1) 
-		return NULL;
-	
-	remove_breakpoint(callstack);
-	return (&callstack->calldata[callstack->depth--]);
-}
-
-/* View the top of the stack without popping */
-calldata_t * callstack_peek(callstack_t *callstack)
-{
-	if (callstack->depth == -1)
-		return NULL;
-	
-	return &callstack->calldata[callstack->depth];
-
-}
-
-struct call_list * add_call_string(struct call_list **head, const char *string)
-{
-	struct call_list *tmp = (struct call_list *)HeapAlloc(sizeof(struct call_list));
-	
-	tmp->callstring = (char *)xstrdup(string);
-	tmp->next = *head; 
-	*head = tmp;
-	
-	return *head;
-
-}
-
-void clear_call_list(struct call_list **head)
-{
-	struct call_list *tmp;
-	
-	if (!head)
-		return;
-
-	while (*head != NULL) {
-		tmp = (*head)->next;
-		free (*head);
-		*head = tmp;
-	}
-}
-
-struct branch_instr * search_branch_instr(uint8_t instr)
-{
-	int i;
-	struct branch_instr *p;
-	
-	for (i = 0, p = branch_table; p->mnemonic != NULL; p++, i++) {
-		if (instr == p->opcode)
-			return p;
-	}
-	
-	return NULL;
-}
-
-void print_call_list(struct call_list **head)
-{
-	if (!head)
-		return;
-	
-	while (*head != NULL) {
-		fprintf(stdout, "%s", (*head)->callstring);
-		head = &(*head)->next;
-	}
-
-}
-
-/*
- * A couple of commonly used utility
- * functions for mem allocation
- * malloc, strdup wrappers.
- */
-
-void * HeapAlloc(unsigned int len)
-{
-	uint8_t *mem = malloc(len);
-	if (!mem) {
-		perror("malloc");
-		exit(-1);
-	}
-	return mem;
-}
-	
-char * xfmtstrdup(char *fmt, ...)
-{
-	char *s, buf[512];
-	va_list va;
-        
-	va_start (va, fmt);
-	vsnprintf (buf, sizeof(buf), fmt, va);
-	s = xstrdup(buf);
-	
-	return s;
-}
-	
-
-
-/*
- * ptrace functions
- */
-
-
-int pid_read(int pid, void *dst, const void *src, size_t len)
-{
-
-        int sz = len / sizeof(void *);
-        unsigned char *s = (unsigned char *)src;
-        unsigned char *d = (unsigned char *)dst;
-        long word;
-	
-        while (sz-- != 0) {
-                word = ptrace(PTRACE_PEEKTEXT, pid, s, NULL);
-                if (word == -1 && errno) 
-                       	return -1;
-         
-	       *(long *)d = word;
-                s += sizeof(long);
-                d += sizeof(long);
-        }
-        
-        return 0;
-}
-
-
-/*
- * Get global/local and dynamic
- * symbol/function information.
- */
-int BuildSyms(struct handle *h)
-{
-	unsigned int i, j, k;
-	char *SymStrTable;
-	Elf32_Ehdr *ehdr32;
-	Elf32_Shdr *shdr32;
-	Elf32_Sym  *symtab32;
-	Elf64_Ehdr *ehdr64;
-	Elf64_Shdr *shdr64;
-	Elf64_Sym  *symtab64;
-	int st_type;
-	
-	h->lsc = 0;
-	h->dsc = 0;
-
-	switch(opts.arch) {
-		case 32:
-			ehdr32 = h->elf32->ehdr;
-			shdr32 = h->elf32->shdr;
-		
-			for (i = 0; i < ehdr32->e_shnum; i++) {
-				if (shdr32[i].sh_type == SHT_SYMTAB || shdr32[i].sh_type == SHT_DYNSYM) {
-					 
-				 	SymStrTable = (char *)&h->map[shdr32[shdr32[i].sh_link].sh_offset]; 
-                       			symtab32 = (Elf32_Sym *)&h->map[shdr32[i].sh_offset];
-					
-                        		for (j = 0; j < shdr32[i].sh_size / sizeof(Elf32_Sym); j++, symtab32++) {
-						
-						st_type = ELF32_ST_TYPE(symtab32->st_info);
-						if (st_type != STT_FUNC)
-							continue;
-
-						switch(shdr32[i].sh_type) {
-							case SHT_SYMTAB:
-								h->lsyms[h->lsc].name = xstrdup(&SymStrTable[symtab32->st_name]);
-								h->lsyms[h->lsc].value = symtab32->st_value;
-								h->lsc++;
-								break;
-							case SHT_DYNSYM:
-								h->dsyms[h->dsc].name = xstrdup(&SymStrTable[symtab32->st_name]);
-								h->lsyms[h->lsc].value = symtab32->st_value;
-								h->dsc++;
-								break;
-						}
-                        		}
-                		}
-			}
-			
-		        h->elf32->StringTable = (char *)&h->map[shdr32[ehdr32->e_shstrndx].sh_offset];
-                        for (i = 0; i < ehdr32->e_shnum; i++) {
-                                if (!strcmp(&h->elf32->StringTable[shdr32[i].sh_name], ".plt")) {
-                                        for (k = 0, j = 0; j < shdr32[i].sh_size; j += 16) {
-                                                if (j >= 16) {
-                                                        h->dsyms[k++].value = shdr32[i].sh_addr + j;
-                                                }
-                                        }
-                                        break;
-                                }
-                        } 
-			break;
-		case 64:
-		    	ehdr64 = h->elf64->ehdr;
-                        shdr64 = h->elf64->shdr;
-		
-                        for (i = 0; i < ehdr64->e_shnum; i++) {
-                                if (shdr64[i].sh_type == SHT_SYMTAB || shdr64[i].sh_type == SHT_DYNSYM) {
-
-                                        SymStrTable = (char *)&h->map[shdr64[shdr64[i].sh_link].sh_offset];
-                                        symtab64 = (Elf64_Sym *)&h->map[shdr64[i].sh_offset];
-
-                                        for (j = 0; j < shdr64[i].sh_size / sizeof(Elf64_Sym); j++, symtab64++) {
-						
-					  	st_type = ELF64_ST_TYPE(symtab64->st_info);
-						if (st_type != STT_FUNC)
-							continue;
-
-                                                switch(shdr64[i].sh_type) {
-                                                        case SHT_SYMTAB:
-                                                                h->lsyms[h->lsc].name = xstrdup(&SymStrTable[symtab64->st_name]);
-                                                                h->lsyms[h->lsc].value = symtab64->st_value;
-                                                                h->lsc++;
-                                                                break;
-                                                        case SHT_DYNSYM:	
-                                                                h->dsyms[h->dsc].name = xstrdup(&SymStrTable[symtab64->st_name]);
-                                                                h->dsyms[h->dsc].value = symtab64->st_value;
-                                                                h->dsc++;
-                                                                break;
-                                                }
-                                        }
-                                }
-                        }
-                        h->elf64->StringTable = (char *)&h->map[shdr64[ehdr64->e_shstrndx].sh_offset];
-                        for (i = 0; i < ehdr64->e_shnum; i++) {
-                                if (!strcmp(&h->elf64->StringTable[shdr64[i].sh_name], ".plt")) {
-                                        for (k = 0, j = 0; j < shdr64[i].sh_size; j += 16) {
-                                                if (j >= 16) {
-							h->dsyms[k++].value = shdr64[i].sh_addr + j;
-                                                }
-                                        }
-					break;
-                                }
-                        }
-			break;
-		}
-
-		return 0;
-
-}
-
-void locate_dynamic_segment(struct handle *h)
-{
-        int i;
-        
-	switch (opts.arch) {
-		case 32:
-        		h->elf32->dyn = NULL;
-        		for (i = 0; i < h->elf32->ehdr->e_phnum; i++) {
-                		if (h->elf32->phdr[i].p_type == PT_DYNAMIC) {
-                        		h->elf32->dyn = (Elf32_Dyn *)&h->map[h->elf32->phdr[i].p_offset];
-                        		break;
-                		}
-       			}				
-			break;
-		case 64:
-		  	h->elf64->dyn = NULL;
-                        for (i = 0; i < h->elf64->ehdr->e_phnum; i++) {
-                                if (h->elf64->phdr[i].p_type == PT_DYNAMIC) {
-                                        h->elf64->dyn = (Elf64_Dyn *)&h->map[h->elf64->phdr[i].p_offset];
-                                        break;
-                                }
-                        } 
-			break;
-	}
-
-}
-
-uint8_t *get_section_data(struct handle *h, const char *section_name)
-{
-	
-        char *StringTable;
-	int i;
-
-	switch (opts.arch) {
-		case 32:
-			StringTable = h->elf32->StringTable;
-			for (i = 0; i < h->elf32->ehdr->e_shnum; i++) {
-				if (!strcmp(&StringTable[h->elf32->shdr[i].sh_name], section_name)) {
-					return &h->map[h->elf32->shdr[i].sh_offset];
-				}
-			}
-			break;
-		case 64:
-		 	StringTable = h->elf64->StringTable;
-                        for (i = 0; i < h->elf64->ehdr->e_shnum; i++) {
-                                if (!strcmp(&StringTable[h->elf64->shdr[i].sh_name], section_name)) {
-                                        return &h->map[h->elf64->shdr[i].sh_offset];
-                                }
-                        }
-			break;
-	}
-	
-    return NULL;
-}
-
-char *get_dt_strtab_name(struct handle *h, int xset)
-{
-        static char *dyn_strtbl;
-
-        if (!dyn_strtbl && !(dyn_strtbl = get_section_data(h, ".dynstr"))) 
-                printf("[!] Could not locate .dynstr section\n");
-  
-        return dyn_strtbl + xset;
-}
-
-void parse_dynamic_dt_needed(struct handle *h)
-{
-        char *symstr;
-        int i;
-	Elf32_Dyn *dyn32;
-	Elf64_Dyn *dyn64;
-
-        locate_dynamic_segment(h);
-        h->lnc = 0;
-
-	switch(opts.arch) {
-		case 32:
-        		dyn32 = h->elf32->dyn;
-        		for (i = 0; dyn32[i].d_tag != DT_NULL; i++) {
-                		if (dyn32[i].d_tag == DT_NEEDED) {
-                        		symstr = get_dt_strtab_name(h, dyn32[i].d_un.d_val);
-                        		h->libnames[h->lnc++] = (char *)xstrdup(symstr);
-                		}
-      			}
-			break;
-		case 64:
-			dyn64 = h->elf64->dyn;
-			for (i = 0; dyn64[i].d_tag != DT_NULL; i++) {
-                                if (dyn64[i].d_tag == DT_NEEDED) {
-                                        symstr = get_dt_strtab_name(h, dyn64[i].d_un.d_val);
-                                        h->libnames[h->lnc++] = (char *)xstrdup(symstr);
-                                }
-                        }
-			break;
-		}
-}
-
-/*
- * This function attempts to get an ascii string
- * from a pointer location.
- */
-#ifdef __x86_64__
-char *getstr(unsigned long addr, int pid)
-{	
-	int i, j, c;
-	uint8_t buf[sizeof(long)];
-	char *string = (char *)HeapAlloc(256);
-	unsigned long vaddr;
-	
-	string[0] = '"';
-	for (c = 1, i = 0; i < 256; i += sizeof(long)) {
-		vaddr = addr + i;
-
-		if (pid_read(pid, buf, (void *)vaddr, sizeof(long)) == -1) {
-			fprintf(stderr, "pid_read() failed: %s <0x%lx>\n", strerror(errno), vaddr);
-			exit(-1);
-		}
- 
-		for (j = 0; j < sizeof(long); j++) {
-
-			if (buf[j] == '\n') {
-				string[c++] = '\\';
-				string[c++] = 'n';
-				continue;
-			}
-			if (buf[j] == '\t') {
-				string[c++] = '\\';
-				string[c++] = 't';
-				continue;
-			}
-
-			if (buf[j] != '\0' && isascii(buf[j]))
-				string[c++] = buf[j];
-			else
-				goto out;
-		}
-	}
-	
-out:
-	string[c++] = '"';
-	string[c] = '\0';
-
-	return string;	
-
-}
-#endif
-
-#ifdef __x86_64__
-char *getargs(struct user_regs_struct *reg, int pid, struct address_space *addrspace)
-{
-	unsigned char buf[12];
-	int i, c, in_ptr_range = 0, j;
-	char *args[256], *p;
-	char tmp[512], *s = NULL;
-	long val;
-	char *string = (char *)HeapAlloc(MAXSTR);
-	unsigned int maxstr = MAXSTR;
-	unsigned int b;
-
-	
-	/* x86_64 supported only at this point--
-	 * We are essentially parsing this
-	 * calling convention here:
-	     	mov    %rsp,%rbp
- 	    	mov    $0x6,%r9d
-  	  	mov    $0x5,%r8d
-  	       	mov    $0x4,%ecx
-  	       	mov    $0x3,%edx
-  	       	mov    $0x2,%esi
- 	       	mov    $0x1,%edi
-  	     	callq  400144 <func>
-	*/
-	
-
-	for (c = 0, in_ptr_range = 0, i = 0; i < 35; i += 5) {
-		
-		val = reg->rip - i;
-		if (pid_read(pid, buf, (void *)val, 8) == -1) {
-			fprintf(stderr, "pid_read() failed [%d]: %s <0x%llx>\n", pid, strerror(errno), reg->rip);
-			exit(-1);
-		}
-		
-		in_ptr_range = 0;
-		if (buf[0] == 0x48 && buf[1] == 0x89 && buf[2] == 0xe5) // mov %rsp, %rbp
-			break;
-		switch((unsigned char)buf[0]) {
-			case 0xbf:
-				if (opts.typeinfo || opts.getstr) {
-					for (j = 0; j < 4; j++) {
-						if (reg->rdi >= addrspace[j].svaddr && reg->rdi <= addrspace[j].evaddr) {
-							in_ptr_range++;
-							switch(j) {
-								case TEXT_SPACE:
-									if (opts.getstr) {
-										s = getstr((unsigned long)reg->rdi, pid);
-										if (s) {
-											snprintf(tmp, sizeof(tmp), "%s", s);
-											args[c++] = xstrdup(tmp);
-											break;
-										}
-									}
-									sprintf(tmp, "(text_ptr *)0x%llx", reg->rdi);
-									break;
-								case DATA_SPACE:
-							        	if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-									sprintf(tmp, "(data_ptr *)0x%llx", reg->rdi);
-									break;
-								case HEAP_SPACE:
-							       		if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-									sprintf(tmp, "(heap_ptr *)0x%llx", reg->rdi);
-									break;
-								case STACK_SPACE:
-									 if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-									sprintf(tmp, "(stack_ptr *)0x%llx", reg->rdi);
-									break;
-							}
-						}
-					}
-					if (!in_ptr_range) {
-						sprintf(tmp, "0x%llx",reg->rdi);
-					}	
-					if (!s)
-						args[c++] = xstrdup(tmp);
-					break;
-				}
-				sprintf(tmp, "0x%llx", reg->rdi);
-				args[c++] = xstrdup(tmp);
-				break;
-			case 0xbe:
-			        if (opts.typeinfo) {
-                                        for (j = 0; j < 4; j++) {
-                                                if (reg->rsi >= addrspace[j].svaddr && reg->rsi <= addrspace[j].evaddr) {
-                                                        in_ptr_range++;
-                                                        switch(j) {
-                                                                case TEXT_SPACE:
-                                                                        if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rsi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(text_ptr *)0x%llx", reg->rsi);
-                                                                        break;
-                                                                case DATA_SPACE:
-									 if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rsi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(data_ptr *)0x%llx", reg->rsi);
-                                                                        break;
-                                                                case HEAP_SPACE:
-									 if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rsi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(heap_ptr *)0x%llx", reg->rsi);
-                                                                        break;
-                                                                case STACK_SPACE:
-									 if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rsi, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(stack_ptr *)0x%llx", reg->rsi);
-                                                                        break;
-                                                        }
-                                                }
-                                        }
-                                        if (!in_ptr_range) {
-                                                sprintf(tmp, "0x%llx", reg->rsi);
-                                        }
-					if (!s)
-						args[c++] = xstrdup(tmp);
-					break;
-                                }
-
-				sprintf(tmp, "0x%llx", reg->rsi);
-				args[c++] = xstrdup(tmp);
-				break;
-			case 0xba:
-	                         if (opts.typeinfo) {
-                                        for (j = 0; j < 4; j++) {
-                                                if (reg->rdx >= addrspace[j].svaddr && reg->rdx <= addrspace[j].evaddr) {
-                                                        in_ptr_range++;
-                                                        switch(j) {
-                                                                case TEXT_SPACE:
-                                                                        if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(text_ptr *)0x%llx", reg->rdx);
-                                                                        break;
-                                                                case DATA_SPACE:
-							        	if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(data_ptr *)0x%llx", reg->rdx);
-                                                                        break;
-                                                                case HEAP_SPACE:
-			                                        	if (opts.getstr) {				
-                                                                                s = getstr((unsigned long)reg->rdx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(heap_ptr *)0x%llx", reg->rdx);
-                                                                        break;
-                                                                case STACK_SPACE:
-									if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rdx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(stack_ptr *)0x%llx", reg->rdx);
-                                                                        break;
-                                                        }
-                                                }
-                                        }
-                                        if (!in_ptr_range) {
-                                                sprintf(tmp, "0x%llx", reg->rdx);
-                                        }
-					if (!s)
-						args[c++] = xstrdup(tmp);
-					break;
-                                }
-
-				sprintf(tmp, "0x%llx", reg->rdx);
-				args[c++] = xstrdup(tmp);
-				break;
-			case 0xb9:
-                        	if (opts.typeinfo) {
-                                        for (j = 0; j < 4; j++) {
-                                                if (reg->rcx >= addrspace[j].svaddr && reg->rcx <= addrspace[j].evaddr) {
-                                                        in_ptr_range++;
-                                                        switch(j) {
-                                                                case TEXT_SPACE:
-									if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rcx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(text_ptr *)0x%llx", reg->rcx);
-                                                                        break;
-                                                                case DATA_SPACE:
-									if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rcx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(data_ptr *)0x%llx", reg->rcx);
-                                                                        break;
-                                                                case HEAP_SPACE:
-									if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rcx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-                                                                        sprintf(tmp, "(heap_ptr *)0x%llx", reg->rcx);
-                                                                        break;
-                                                                case STACK_SPACE:
-							        	if (opts.getstr) {
-                                                                                s = getstr((unsigned long)reg->rcx, pid);
-                                                                                if (s) {
-                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        args[c++] = xstrdup(tmp);
-                                                                                        break;
-                                                                                }
-                                                                        }
-
-                                                                        sprintf(tmp, "(stack_ptr *)0x%llx", reg->rcx);
-                                                                        break;
-                                                        }
-                                                }
-                                        }
-                                        if (!in_ptr_range) {
-                                                sprintf(tmp, "0x%llx", reg->rcx);
-                                        }
-					if (!s)
-						args[c++] = xstrdup(tmp);
-					break;
-                                }
-
-				sprintf(tmp, "0x%llx", reg->rcx);
-				args[c++] = xstrdup(tmp);
-				break;
-			case 0x41:
-				switch((unsigned char)buf[1]) {
-					case 0xb8:
-				        	if (opts.typeinfo) {
-                                        		for (j = 0; j < 4; j++) {
-                                                		if (reg->r8 >= addrspace[j].svaddr && reg->r8 <= addrspace[j].evaddr) {
-                                                        		in_ptr_range++;
-                                                        		switch(j) {
-                                                                		case TEXT_SPACE:
- 			                                                        	if (opts.getstr) {
-                                                                                		s = getstr((unsigned long)reg->r8, pid);
-                                                                                		if (s) {
-                                                                                        		snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                        		args[c++] = xstrdup(tmp);
-                                                                                        		break;
-                                                                                		}
-                                                                        		}
-                                                                        		sprintf(tmp, "(text_ptr *)0x%llx", reg->r8);
-                                                                        		break;
-                                                                		case DATA_SPACE:
-											if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r8, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                        		sprintf(tmp, "(data_ptr *)0x%llx", reg->r8);
-                                                                        		break;
-                                                                		case HEAP_SPACE:
-                                                                                        if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r8, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                        		sprintf(tmp, "(heap_ptr *)0x%llx", reg->r8);
-                                                                        		break;
-                                                                		case STACK_SPACE:
-											if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r8, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                        		sprintf(tmp, "(stack_ptr *)0x%llx", reg->r8);
-                                                                        		break;
-                                                        		}
-                                                		}
-                                        		}
-                                        		if (!in_ptr_range) {
-                                                		sprintf(tmp, "0x%llx", reg->r8);
-                                        		}
-							if (!s)
-								args[c++] = xstrdup(tmp);
-							break;
-                                		}
-						
-						sprintf(tmp, "0x%llx", reg->r8);
-						args[c++] = xstrdup(tmp);
-						break;
-					case 0xb9:
-					        if (opts.typeinfo) {
-                                                        for (j = 0; j < 4; j++) {
-                                                                if (reg->r9 >= addrspace[j].svaddr && reg->r9 <= addrspace[j].evaddr) {
-                                                                        in_ptr_range++;
-                                                                        switch(j) {
-                                                                                case TEXT_SPACE:
-											if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r9, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                                        sprintf(tmp, "(text_ptr *)0x%llx", reg->r9);
-                                                                                        break;
-                                                                                case DATA_SPACE:
-											if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r9, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                                        sprintf(tmp, "(data_ptr *)0x%llx", reg->r9);
-                                                                                        break;
-                                                                                case HEAP_SPACE:
-											  if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r9, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                                        sprintf(tmp, "(heap_ptr *)0x%llx", reg->r9);
-                                                                                        break;
-                                                                                case STACK_SPACE:
-											  if (opts.getstr) {
-                                                                                                s = getstr((unsigned long)reg->r9, pid);
-                                                                                                if (s) {
-                                                                                                        snprintf(tmp, sizeof(tmp), "%s", s);
-                                                                                                        args[c++] = xstrdup(tmp);
-                                                                                                        break;
-                                                                                                }
-                                                                                        }
-                                                                                        sprintf(tmp, "(stack_ptr *)0x%llx", reg->r9);
-                                                                                        break;
-                                                                        }       
-                                                                }
-                                                        }
-                                                        if (!in_ptr_range) {
-                                                                sprintf(tmp, "0x%llx", reg->r9);
-                                                        }
-							if (!s)
-								args[c++] = xstrdup(tmp);
-							break;       
-                                                }
-
-						sprintf(tmp, "0x%llx", reg->r9);
-						args[c++] = xstrdup(tmp);
-						break;
-				}
-		}
-	}
-
-	/*
-	 * XXX pre-allocation for strcpy/strcat, tested with super long function name
-	 */
-	if (c == 0)
-		return NULL;
-	
-	for (b = 0, i = 0; i < c; i++) 
-		b += strlen(args[i]) + 1; // len + ','
-	if (b > maxstr + 2) { // maxstr + 2 braces
-		string = realloc((char *)string, maxstr + (b - (maxstr + 2)) + 1);
-		maxstr += (b - maxstr) + 3;
-	}
-	
-	string[0] = '(';
-        strcpy((char *)&string[1], args[0]);
-        strcat(string, ",");
-        
-        for (i = 1; i < c; i++) {
-                strcat(string, args[i]);
-                strcat(string, ",");
-        }
-                
-        if ((p = strrchr(string, ','))) 
-                *p = '\0';
-        strcat(string, ")");
-        return string;
-
-}
-#endif
-
-int distance(unsigned long a, unsigned long b)
-{
-	return ((a > b) ? (a - b) : (b - a));
-}
-
-/*
- * Our main handler function to parse ELF info
- * read instructions, parse them, and print
- * function calls and stack args.
- */
-void examine_process(struct handle *h)
-{
-        long esp, eax, ebx, edx, ecx, esi, edi, eip;
-	int symmatch = 0, cflow_change = 0;
-	int i, count, status, in_routine = 0; 
-	struct user_regs_struct pt_reg;
-	uint8_t buf[8];
-	unsigned long vaddr;
-	unsigned int offset;
-	char *argstr = NULL, subname[255], output[512], *sh_src, *sh_dst;
-	unsigned long current_ip;
-	struct branch_instr *branch;
-	struct address_space *addrspace = (struct address_space *)HeapAlloc(sizeof(struct address_space) * MAX_ADDR_SPACE); 
-
-	callstack_t callstack;
-	calldata_t calldata;
-	calldata_t *calldp;
-
-	global_pid = h->pid;
-	/*
-	 * Allocate ELF structure for
-	 * specified Arch, and map in 
-	 * the executable file for the
-	 * file we are examining.
-	 */
-	switch(opts.arch) {
-		case 32:
-			h->elf32 = HeapAlloc(sizeof(struct elf32));
-			h->elf64 = NULL;
-			MapElf32(h);
-			break;
-		case 64:
-			h->elf64 = HeapAlloc(sizeof(struct elf64));
-			h->elf32 = NULL;
-			MapElf64(h);
-			break;
-	}
-
-	/*
-	 * Build ELF Symbol information
-	 */
-	BuildSyms(h);
-	
-	/* 
-	 * Retrieve the program address space layout
-	 * to aid in our pointer/type prediction
-	 */
-	get_address_space((struct address_space *)addrspace, h->pid, h->path);
-
-	if (opts.elfinfo) {
-		printf("[+] Printing Symbol Information:\n\n");
-		for (i = 0; i < h->lsc; i++) {
-			if (h->lsyms[i].name == NULL)
-				printf("UNKNOWN: 0x%lx\n", h->lsyms[i].value);
-			else
-				printf("%s 0x%lx\n", h->lsyms[i].name, h->lsyms[i].value);
-		}
-		for (i = 0; i < h->dsc; i++) {
-			if (h->lsyms[i].name == NULL)
-				printf("UNKNOWN: 0x%lx\n", h->lsyms[i].value);
-			else
-				printf("%s 0x%lx\n", h->dsyms[i].name, h->dsyms[i].value);
-		}
-		
-		printf("\n[+] Printing shared library dependencies:\n\n");
-		
-		parse_dynamic_dt_needed(h);
-		for (i = 0; i < h->lnc; i++) {
-			printf("[%d]\t%s\n", i + 1, h->libnames[i]);
-		}
-	}
-	
-	if (opts.verbose ) {
-	 	printf("[+] Printing the address space layout\n");
-                printf("0x%lx-0x%lx %s [text]\n", addrspace[TEXT_SPACE].svaddr, addrspace[TEXT_SPACE].evaddr, h->path);
-                printf("0x%lx-0x%lx %s [data]\n", addrspace[DATA_SPACE].svaddr, addrspace[DATA_SPACE].evaddr, h->path);
-                printf("0x%lx-0x%lx %s [heap]\n", addrspace[HEAP_SPACE].svaddr, addrspace[HEAP_SPACE].evaddr, h->path);
-                printf("0x%lx-0x%lx %s [stack]\n",addrspace[STACK_SPACE].svaddr, addrspace[STACK_SPACE].evaddr, h->path);
-	}
-
-	/*
-	 * Initiate our call frame stack
-	 */
-	callstack_init(&callstack);
-
-	printf("\n[+] Function tracing begins here:\n");
-        for (;;) {
-
-                ptrace (PTRACE_SINGLESTEP, h->pid, NULL, NULL);
-                wait (&status);
-                count++;
-	//	ptrace(PTRACE_GETREGS, h->pid, NULL, &pt_reg);
-					
-                if (WIFEXITED (status))
-                	break;
-		
-                ptrace (PTRACE_GETREGS, h->pid, NULL, &pt_reg);
-#if defined(__x86_64__)
-		esp = pt_reg.rsp;
-		eip = pt_reg.rip;
-		eax = pt_reg.rax;
-		ebx = pt_reg.rbx;
-		ecx = pt_reg.rcx;
-		edx = pt_reg.rdx;
-		esi = pt_reg.rsi;
-		edi = pt_reg.rdi;
-#else
-		esp = pt_reg.esp;
-		eip = pt_reg.eip;
-		eax = pt_reg.eax;
-		ebx = pt_reg.ebx;
-		ecx = pt_reg.ecx;
-		edx = pt_reg.edx;
-		esi = pt_reg.esi;
-		edi = pt_reg.edi;
-#endif
-		if (pid_read(h->pid, buf, (void *)eip, 8) < 0) {
-			fprintf(stderr, "pid_read() failed: %s <0x%lx>\n", strerror(errno), eip);
-			exit(-1);
-		}
-		
-		
-		if (opts.cflow) {	
-			
-			/*
-			 * If eip is outside of our binary and in say a shared
-			 * object then we don't look at the control flow.
-			 */
-			if (eip < addrspace[TEXT_SPACE].svaddr || eip > addrspace[TEXT_SPACE].evaddr)
-				continue;
-			
-			if (branch = search_branch_instr(buf[0])) {
-				
-				ptrace(PTRACE_SINGLESTEP, h->pid, NULL, NULL);
-				wait(&status);
-
-				ptrace(PTRACE_GETREGS, h->pid, NULL, &pt_reg);
-#ifdef __x86_64__
-				current_ip = pt_reg.rip;
-#else
-				current_ip = pt_reg.eip;
-#endif
-				
-				if (distance(current_ip, eip) > BRANCH_INSTR_LEN_MAX) {
-					cflow_change = 1;
-					sh_src = get_section_by_range(h, eip);
-					sh_dst = get_section_by_range(h, current_ip);
-					printf("%s(CONTROL FLOW CHANGE [%s]):%s Jump from %s 0x%lx into %s 0x%lx\n", YELLOW, branch->mnemonic, WHITE,
-					!sh_src?"<unknown section>":sh_src, eip, 
-					!sh_dst?"<unknown section>":sh_src, current_ip);
-				} 
-
-				if (cflow_change) {
-					cflow_change = 0;
-					continue;
-				}
-
-			}
-		}
-
-		/*
-		 * Did we hit a breakpoint (Return address?)
-		 * if so, then we check eax to get the return
-		 * value, and pop the call data from the stack,
-		 * which will remove the breakpoint as well.
-		 */
-		if (buf[0] == 0xcc) {
-			calldp = callstack_peek(&callstack);
-                        if (calldp != NULL) {
-                                if (calldp->retaddr == eip) {
-					snprintf(output, sizeof(output), "%s(RETURN VALUE) %s%s = %lx\n", RED, WHITE, calldp->string, eax);
-					
-					/*
-					 * Pop call stack and remove the
-					 * breakpoint at its return address.
-					 */
-					fprintf(stdout, "%s", output);
-                                        calldp = callstack_pop(&callstack);
-					free(calldp->string);
-					free(calldp->symname);
-				}
-			}
-		}
-		
-		
-		/*
-		 * As we catch each immediate call
-		 * instruction, we use callstack_push()
-		 * to push the call data onto our stack
-		 * and set a breakpoint at the return
-		 * address of the function call so that we
-		 * can get the retrun value with the code above.
-		 */
-		if (buf[0] == 0xe8) {
-			
-			offset = buf[1] + (buf[2] << 8) + (buf[3] << 16) + (buf[4] << 24);
-			vaddr = eip + offset + 5; 
-			vaddr &= 0xffffffff;
-
-			for (i = 0; i < h->lsc; i++) {
-				if (vaddr == h->lsyms[i].value) {
-#ifdef __x86_64__
-					argstr = getargs(&pt_reg, h->pid, addrspace);
-#endif
-					if (argstr == NULL)
-						printf("%sLOCAL_call@0x%lx:%s%s()\n", GREEN, h->lsyms[i].value,  WHITE, !h->lsyms[i].name?"<unknown>":h->lsyms[i].name);
-					else
-						printf("%sLOCAL_call@0x%lx:%s%s%s\n", GREEN, h->lsyms[i].value, WHITE,  h->lsyms[i].name, argstr);
-
-					calldata.symname = xstrdup(h->lsyms[i].name);
-					calldata.vaddr = h->lsyms[i].value;
-					calldata.retaddr = eip + 5;
-					if (argstr == NULL) 
-						calldata.string = xfmtstrdup("LOCAL_call@0x%lx: %s()", h->lsyms[i].value, !h->lsyms[i].name?"<unknown>":h->lsyms[i].name);
-					else
-						calldata.string = xfmtstrdup("LOCAL_call@0x%lx: %s%s", h->lsyms[i].value, h->lsyms[i].name, argstr);
-					
-					if (opts.verbose)
-						printf("Return address for %s: 0x%lx\n", calldata.symname, calldata.retaddr);
-					callstack_push(&callstack, &calldata);
-					symmatch = 1;
-				}
-				
-			}
-			for (i = 0; i < h->dsc; i++) {
-				if (vaddr == h->dsyms[i].value) {
-#ifdef __x86_64__
-					argstr = getargs(&pt_reg, h->pid, addrspace);
-#endif
-					if (argstr == NULL)
-                                                printf("%sPLT_call@0x%lx:%s%s()\n", GREEN, h->dsyms[i].value, WHITE, !h->dsyms[i].name?"<unknown>":h->dsyms[i].name);
-                                        else
-                                                printf("%sPLT_call@0x%lx:%s%s%s\n", GREEN, h->dsyms[i].value, WHITE, h->dsyms[i].name, argstr);
-
-
-
-					calldata.symname = xstrdup(h->dsyms[i].name);
-                                        calldata.vaddr = h->dsyms[i].value;
-                                        calldata.retaddr = eip + 5;
-					if (argstr == NULL)
-						calldata.string = xfmtstrdup("PLT_call@0x%lx: %s()", h->dsyms[i].value, !h->dsyms[i].name?"<unknown>":h->dsyms[i].name);
-					else
-						calldata.string = xfmtstrdup("PLT_call@0x%lx: %s%s", h->dsyms[i].value, h->dsyms[i].name, argstr);
-					if (opts.verbose)
-						printf("Return address for %s: 0x%lx\n", calldata.symname, calldata.retaddr);
-                                        callstack_push(&callstack, &calldata);
-                                        symmatch = 1;
-				}
-			}
-			
-			if (opts.stripped) {
-				if (symmatch) {
-					symmatch = 0;
-				} else {
-#ifdef __x86_64__
-					argstr = getargs(&pt_reg, h->pid, addrspace);
-#endif
-					if (argstr == NULL)
-						printf("%sLOCAL_call@0x%lx:%ssub_%lx()\n", GREEN, vaddr, WHITE, vaddr);
-					else
-						printf("%sLOCAL_call@0x%lx:%ssub_%lx%s\n", GREEN, vaddr, WHITE, vaddr, argstr);
-
-					snprintf(subname, sizeof(subname) - 1, "sub_%lx%s", vaddr, argstr == NULL ? "()" : argstr);
-					calldata.symname = xstrdup(subname);
-                                        calldata.vaddr = vaddr;
-                                        calldata.retaddr = eip + 5;
-					if (argstr == NULL)
-						calldata.string = xfmtstrdup("LOCAL_call@0x%lx: sub_%lx()", vaddr, vaddr);
-					else
-						calldata.string = xfmtstrdup("LOCAL_call@0x%lx: sub_%lx%s", vaddr, vaddr, argstr);
-                                        callstack_push(&callstack, &calldata);
-                                        symmatch = 1;
-
-				}
-			}
-
-			if (argstr) {
-				free(argstr);
-				argstr = NULL;
-			}
-
- 
-		}
-		
-				
-	}
-
-}
-
-void MapElf32(struct handle *h)
-{
-	int fd;
-	struct stat st;
-	
-	if ((fd = open(h->path, O_RDONLY)) < 0) {
-		fprintf(stderr, "Unable to open %s: %s\n", h->path, strerror(errno));
-		exit(-1);
-	}
-
-	if (fstat(fd, &st) < 0) {
-		perror("fstat");
-		exit(-1);
-	}
-
-	h->map = (uint8_t *)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (h->map == MAP_FAILED) {
-		perror("mmap");
-		exit(-1);
-	}
-
-	h->elf32->ehdr = (Elf32_Ehdr *)h->map;
-	h->elf32->shdr = (Elf32_Shdr *)(h->map + h->elf32->ehdr->e_shoff);
-	h->elf32->phdr = (Elf32_Phdr *)(h->map + h->elf32->ehdr->e_phoff);
-	
-	h->elf32->StringTable = (char *)&h->map[h->elf32->shdr[h->elf32->ehdr->e_shstrndx].sh_offset];
-
- 	if (h->elf32->ehdr->e_shnum > 0 && h->elf32->ehdr->e_shstrndx != SHN_UNDEF)
-                load_elf_section_range(h);
-}
-
-/*
- * Parse /proc/<pid>/maps to get address space layout
- * of executable text/data, heap, stack.
- */
-void get_address_space(struct address_space *addrspace, int pid, char *path)
-{
-	char tmp[64], buf[256];
-        char *p, addrstr[32];
-	FILE *fd;
-        int i, lc;
-	
-        snprintf(tmp, 64, "/proc/%d/maps", pid);
-
-        if ((fd = fopen(tmp, "r")) == NULL) {
-                fprintf(stderr, "Unable to open %s: %s\n", tmp, strerror(errno));
-                exit(-1);
-        }
-	
-        for (lc = 0, p = buf; fgets(buf, sizeof(buf), fd) != NULL; lc++) {
-		/*
-		 * Get executable text and data
-	 	 * segment addresses.
-		 */
-		if ((char *)strchr(buf, '/') && lc == 0) {
-			for (i = 0; *p != '-'; i++, p++) 
-				addrstr[i] = *p;
-			addrstr[i] = '\0';
-			addrspace[TEXT_SPACE].svaddr = strtoul(addrstr, NULL, 16);
-			for (p = p + 1, i = 0; *p != 0x20; i++, p++)
-				addrstr[i] = *p;
-			addrstr[i] = '\0';
-			addrspace[TEXT_SPACE].evaddr = strtoul(addrstr, NULL, 16);
-			addrspace[TEXT_SPACE].size = addrspace[TEXT_SPACE].evaddr - addrspace[TEXT_SPACE].svaddr;
-		}
-		
-		if ((char *)strchr(buf, '/') && strstr(buf, path) && strstr(buf, "rw-p")) {
-			for (i = 0, p = buf; *p != '-'; i++, p++)
-				addrstr[i] = *p;				
-			addrstr[i] = '\0';
-			addrspace[DATA_SPACE].svaddr = strtoul(addrstr, NULL, 16);
-			for (p = p + 1, i = 0; *p != 0x20; i++, p++)
-                                addrstr[i] = *p;
-                        addrstr[i] = '\0';
-                        addrspace[DATA_SPACE].evaddr = strtoul(addrstr, NULL, 16);
-                        addrspace[DATA_SPACE].size = addrspace[DATA_SPACE].evaddr - addrspace[DATA_SPACE].svaddr;
-		}
-		/*
-		 * Get the heap segment address layout
-	 	 */
-		if (strstr(buf, "[heap]")) {
-			for (i = 0, p = buf; *p != '-'; i++, p++)
-				addrstr[i] = *p;
-			addrstr[i] = '\0';
-			addrspace[HEAP_SPACE].svaddr = strtoul(addrstr, NULL, 16);
-			for (p = p + 1, i = 0; *p != 0x20; i++, p++)
-				addrstr[i] = *p;
-			addrstr[i] = '\0';
-			addrspace[HEAP_SPACE].evaddr = strtoul(addrstr, NULL, 16);
-			addrspace[HEAP_SPACE].size = addrspace[HEAP_SPACE].evaddr - addrspace[DATA_SPACE].svaddr;
-		}
-		/*
-		 * Get the stack segment layout
-		 */
-		if (strstr(buf, "[stack]")) {
-			 for (i = 0, p = buf; *p != '-'; i++, p++)
-                                addrstr[i] = *p;
-                        addrstr[i] = '\0';
-                        addrspace[STACK_SPACE].svaddr = strtoul(addrstr, NULL, 16);
-                        for (p = p + 1, i = 0; *p != 0x20; i++, p++)
-                                addrstr[i] = *p;
-                        addrstr[i] = '\0';
-                        addrspace[STACK_SPACE].evaddr = strtoul(addrstr, NULL, 16);
-                        addrspace[STACK_SPACE].size = addrspace[STACK_SPACE].evaddr - addrspace[STACK_SPACE].svaddr;
+        char *str, *tmp, *evt;
+        bool found = false;
+
+        if (events == NULL)
+                return false;
+
+        str = tmp = xstrdup(events);
+
+        evt = strtok(tmp, ";");
+        while (evt) {
+                if (fnmatch(evt, "linux:schedule", 0) == 0) {
+                        found = true;
+                        break;
                 }
-	 }
+                evt = strtok(NULL, ";");
+        }
+
+        free(str);
+        return found;
 }
 
-char * get_path(int pid)
+static char *build_debug_domain_string(void)
 {
-	char tmp[64], buf[256];
-	char path[256], *ret, *p;
-	FILE *fd;
-	int i;
-	
-	snprintf(tmp, 64, "/proc/%d/maps", pid);
-	
-	if ((fd = fopen(tmp, "r")) == NULL) {
-		fprintf(stderr, "Unable to open %s: %s\n", tmp, strerror(errno));
-		exit(-1);
-	}
-	
-	if (fgets(buf, sizeof(buf), fd) == NULL)
-		return NULL;
-	printf("[buf] %s", buf);
-	p = strchr(buf, '/');
-	if (!p)
-		return NULL;
-	for (i = 0; *p != '\n' && *p != '\0'; p++, i++)
-		path[i] = *p;
-	path[i] = '\0';
-	printf("[path] %s\n", path);
-	ret = (char *)HeapAlloc(i + 1);
-	strcpy(ret, path);
-	if (strstr(ret, ".so")) {
-		fprintf(stderr, "Process ID: %d appears to be a shared library; file must be an executable. (path: %s)\n",pid, ret);
-		exit(-1);
-	}
-	return ret;
+        int i, d;
+        static char domain[2*DBG_DOMAIN_MAX + 1];
+
+        for (i = 0, d = 0; d < DBG_DOMAIN_MAX; d++) {
+                if (dbg_domain[d]) {
+                        domain[i++] = DBG_DOMAIN_STR[d];
+                        domain[i++] = dbg_domain[d] + '0';
+                }
+        }
+        domain[i] = '\0';
+
+        return domain;
 }
 
-int validate_em_type(char *path)
+static void write_environ(int fd, char* key, char* value) 
 {
-	int fd;
-	uint8_t *mem;
-	Elf64_Ehdr *ehdr64;
-	Elf32_Ehdr *ehdr32;
+	char buf[256];
+	sprintf(buf, "%s", key);
+	sprintf(buf + strlen(buf), "%s", "=");
+	sprintf(buf + strlen(buf), "%s\n", value);
+	write(fd, buf, strlen(buf)); 
+}
 
-	if ((fd = open(path, O_RDONLY)) < 0) {
-		fprintf(stderr, "Could not open %s: %s\n", path, strerror(errno));
-		exit(-1);
-	}
+static void make_tmp_environ(struct opts *opts, int pfd)
+{
+	char buf[4096];
+	int env_fd;
+	char name[] = "/tmp/uftrace_environ_file";
 	
-	mem = mmap(NULL, 4096, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (mem == MAP_FAILED) {
-		perror("mmap");
-		exit(-1);
+	// env_fd = mkstemp(name);
+	env_fd = open(name, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+
+	if (opts->lib_path) {
+		strcpy(buf, opts->lib_path);
+		strcat(buf, "/libmcount:");
+	} else {
+		/* to make strcat() work */
+		buf[0] = '\0';
 	}
-	
-	switch (opts.arch) {
-		case 32:
-			ehdr32 = (Elf32_Ehdr *)mem;
-			if (ehdr32->e_machine != EM_386)
-				return 0;
-			break;
-		case 64:
-			ehdr64 = (Elf64_Ehdr *)mem;
-			if (ehdr64->e_machine != EM_X86_64 && ehdr64->e_machine != EM_IA_64)
-				return 0;
-			break;
+
+	printf("LOG setup environ\n");
+	snprintf(buf, sizeof(buf), "%d", getpid());
+	write_environ(env_fd, "UFTRACE_PID", buf);
+	if (opts->filter) {
+		char *filter_str = uftrace_clear_kernel(opts->filter);
+
+		if (filter_str) {
+			write_environ(env_fd, "UFTRACE_FILTER", filter_str);
+			//setenv("UFTRACE_FILTER", filter_str, 1);
+			free(filter_str);
+		}
 	}
+
+	if (opts->trigger) {
+		char *trigger_str = uftrace_clear_kernel(opts->trigger);
+
+		if (trigger_str) {
+			write_environ(env_fd, "UFTRACE_TRIGGER", trigger_str);
+			setenv("UFTRACE_TRIGGER", trigger_str, 1);
+			free(trigger_str);
+		}
+	}
+
+	if (opts->retval) {
+		char *retval_str = uftrace_clear_kernel(opts->retval);
+
+		if (retval_str) {
+			write_environ(env_fd, "UFTRACE_RETVAL", retval_str);
+			setenv("UFTRACE_RETVAL", retval_str, 1);
+			free(retval_str);
+		}
+	}
+
+	if (opts->auto_args)
+		write_environ(env_fd, "UFTRACE_AUTO_ARGS", "1");
+		//setenv("UFTRACE_AUTO_ARGS", "1", 1);
+
+	if (opts->patch) {
+		char *patch_str = uftrace_clear_kernel(opts->patch);
+
+		if (patch_str) {
+			write_environ(env_fd, "UFTRACE_PATCH", patch_str);
+			setenv("UFTRACE_PATCH", patch_str, 1);
+			free(patch_str);
+		}
+	}
+
+	if (opts->event) {
+		char *event_str = uftrace_clear_kernel(opts->event);
+
+		if (event_str) {
+			write_environ(env_fd, "UFTRACE_EVENT", event_str);
+			setenv("UFTRACE_EVENT", event_str, 1);
+			free(event_str);
+		}
+	}
+
+	if (opts->depth != OPT_DEPTH_DEFAULT) {
+		snprintf(buf, sizeof(buf), "%d", opts->depth);
+		write_environ(env_fd, "UFTRACE_DEPTH", buf);
+		setenv("UFTRACE_DEPTH", buf, 1);
+	}
+
+	if (opts->max_stack != OPT_RSTACK_DEFAULT) {
+		snprintf(buf, sizeof(buf), "%d", opts->max_stack);
+		write_environ(env_fd, "UFTRACE_MAX_STACK", buf);
+		setenv("UFTRACE_MAX_STACK", buf, 1);
+	}
+
+	if (opts->threshold) {
+		snprintf(buf, sizeof(buf), "%"PRIu64, opts->threshold);
+		write_environ(env_fd, "UFTRACE_THRESHOLD", buf);
+		setenv("UFTRACE_THRESHOLD", buf, 1);
+	}
+
+	if (opts->libcall) {
+		write_environ(env_fd, "UFTRACE_PLTHOOK", "1");
+		setenv("UFTRACE_PLTHOOK", "1", 1);
+
+		if (opts->want_bind_not) {
+			/* do not update GOTPLT after resolving symbols */
+			write_environ(env_fd, "LD_BIND_NOT", "1");
+			setenv("LD_BIND_NOT", "1", 1);
+		}
+
+		if (opts->nest_libcall) {
+			write_environ(env_fd, "UFTRACE_NEST_LIBCALL", "1");
+			setenv("UFTRACE_NEST_LIBCALL", "1", 1);
+		}
+	}
+
+	if (strcmp(opts->dirname, UFTRACE_DIR_NAME)) {
+		write_environ(env_fd, "UFTRACE_DIR", opts->dirname);
+		setenv("UFTRACE_DIR", opts->dirname, 1);
+	}
+
+	if (opts->bufsize != SHMEM_BUFFER_SIZE) {
+		snprintf(buf, sizeof(buf), "%lu", opts->bufsize);
+		write_environ(env_fd, "UFTRACE_BUFFER", buf);
+		setenv("UFTRACE_BUFFER", buf, 1);
+	}
+
+	if (opts->logfile) {
+		snprintf(buf, sizeof(buf), "%d", fileno(logfp));
+		write_environ(env_fd, "UFTRACE_LOGFD", buf);
+		setenv("UFTRACE_LOGFD", buf, 1);
+	}
+
+	snprintf(buf, sizeof(buf), "%d", pfd);
+	setenv("UFTRACE_PIPE", buf, 1);
+	write_environ(env_fd, "UFTRACE_PIPE", buf);
+	setenv("UFTRACE_SHMEM", "1", 1);
+	write_environ(env_fd, "UFTRACE_SHMEM", "1");
+
+	if (debug) {
+		snprintf(buf, sizeof(buf), "%d", debug);
+		setenv("UFTRACE_DEBUG", buf, 1);
+		write_environ(env_fd, "UFTRACE_DEBUG", buf);
+		setenv("UFTRACE_DEBUG_DOMAIN", build_debug_domain_string(), 1);
+		write_environ(env_fd, "UFTRACE_DEBUG_DOMAIN", build_debug_domain_string());
+	}
+
+	if(opts->disabled) {
+		setenv("UFTRACE_DISABLED", "1", 1);
+		write_environ(env_fd, "UFTRACE_DISABLED", "1");
+	}
+
+	if (log_color == COLOR_ON) {
+		snprintf(buf, sizeof(buf), "%d", log_color);
+		setenv("UFTRACE_COLOR", buf, 1);
+		write_environ(env_fd, "UFTRACE_COLOR", buf);
+	}
+
+	snprintf(buf, sizeof(buf), "%d", demangler);
+	setenv("UFTRACE_DEMANGLE", buf, 1);
+	write_environ(env_fd, "UFTRACE_DEMANGLE", buf);
+
+	if ((opts->kernel || has_kernel_event(opts->event)) &&
+	    check_kernel_pid_filter()) {
+		setenv("UFTRACE_KERNEL_PID_UPDATE", "1", 1);
+		write_environ(env_fd, "UFTRACE_KERNEL_PID_UPDATE", "1");
+	}
+
+	if (opts->script_file) {
+		setenv("UFTRACE_SCRIPT", opts->script_file, 1);
+		write_environ(env_fd, "UFTRACE_SCRIPT", opts->script_file);
+	}
+
+	if (opts->lib_path)
+		snprintf(buf, sizeof(buf), "%s/libmcount/", opts->lib_path);
+	else
+		buf[0] = '\0';  /* to make strcat() work */
+
+	strcat(buf, "libmcount-dynamic.so");
+	pr_dbg("using %s library for tracing\n", buf);
+	write_environ(env_fd, "TRACE_LIBRARY", buf);
+
+	setenv("XRAY_OPTIONS", "patch_premain=false", 1);
+	write_environ(env_fd, "XRAY_OPTIONS", "patch_premain=false");
+}
+
+
+static int shmem_lost_count;
+
+struct tid_list {
+	struct list_head list;
+	int pid;
+	int tid;
+	bool exited;
+};
+
+static LIST_HEAD(tid_list_head);
+
+struct dlopen_list {
+        struct list_head list;
+        char *libname;
+};
+
+static LIST_HEAD(dlopen_libs);
+
+static void read_record_mmap(int pfd, const char *dirname, int bufsize)
+{
+	char buf[128];
+	struct shmem_list *sl, *tmp;
+	struct tid_list *tl, *pos;
+	struct uftrace_msg msg;
+	struct uftrace_msg_task tmsg;
+	struct uftrace_msg_sess sess;
+	struct uftrace_msg_dlopen dmsg;
+	struct dlopen_list *dlib;
+	char *exename;
+	int lost;
+
+	if (read_all(pfd, &msg, sizeof(msg)) < 0)
+		pr_err("reading pipe failed:");
+
+	if (msg.magic != UFTRACE_MSG_MAGIC)
+		pr_err_ns("invalid message received: %x\n", msg.magic);
+
+	switch (msg.type) {
+	case UFTRACE_MSG_REC_START:
+		pr_dbg("MSG_REC_START\n");
+		if (msg.len >= SHMEM_NAME_SIZE)
+			pr_err_ns("invalid message length\n");
+
+		sl = xmalloc(sizeof(*sl));
+
+		if (read_all(pfd, sl->id, msg.len) < 0)
+			pr_err("reading pipe failed");
+
+		sl->id[msg.len] = '\0';
+		pr_dbg2("MSG START: %s\n", sl->id);
+
+		/* link to shmem_list */
+		list_add_tail(&sl->list, &shmem_list_head);
+		break;
+
+	case UFTRACE_MSG_REC_END:
+		pr_dbg("UFTRACE_MSG_REC_END\n");
+		if (msg.len >= SHMEM_NAME_SIZE)
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, buf, msg.len) < 0)
+			pr_err("reading pipe failed");
+
+		buf[msg.len] = '\0';
+		pr_dbg2("MSG  END : %s\n", buf);
+
+		/* remove from shmem_list */
+		list_for_each_entry_safe(sl, tmp, &shmem_list_head, list) {
+			if (!memcmp(sl->id, buf, SHMEM_NAME_SIZE)) {
+				list_del(&sl->list);
+				free(sl);
+				break;
+			}
+		}
+
+		record_mmap_file(dirname, buf, bufsize);
+		break;
+
+	case UFTRACE_MSG_TASK_START:
+		pr_dbg("UFTRACE_MSG_TASK_START\n");
+		if (msg.len != sizeof(tmsg))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+			pr_err("reading pipe failed");
+
+		pr_dbg2("MSG TASK_START : %d/%d\n", tmsg.pid, tmsg.tid);
+
+		/* check existing tid (due to exec) */
+		list_for_each_entry(pos, &tid_list_head, list) {
+			if (pos->tid == tmsg.tid) {
+				flush_old_shmem(dirname, tmsg.tid, bufsize);
+				break;
+			}
+		}
+
+		if (list_no_entry(pos, &tid_list_head, list))
+			add_tid_list(tmsg.pid, tmsg.tid);
+
+		write_task_info(dirname, &tmsg);
+		break;
+
+	case UFTRACE_MSG_TASK_END:
+		pr_dbg("UFTRACE_MSG_TASK_END\n");
+		if (msg.len != sizeof(tmsg))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+			pr_err("reading pipe failed");
+
+		pr_dbg2("MSG TASK_END : %d/%d\n", tmsg.pid, tmsg.tid);
+
+		/* mark test exited */
+		list_for_each_entry(pos, &tid_list_head, list) {
+			if (pos->tid == tmsg.tid) {
+				pos->exited = true;
+				break;
+			}
+		}
+		break;
+
+	case UFTRACE_MSG_FORK_START:
+		pr_dbg("FORK\n");
+		if (msg.len != sizeof(tmsg))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+			pr_err("reading pipe failed");
+
+		pr_dbg2("MSG FORK1: %d/%d\n", tmsg.pid, -1);
+
+		add_tid_list(tmsg.pid, -1);
+		break;
+
+	case UFTRACE_MSG_FORK_END:
+		if (msg.len != sizeof(tmsg))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
+			pr_err("reading pipe failed");
+
+		list_for_each_entry(tl, &tid_list_head, list) {
+			if (tl->pid == tmsg.pid && tl->tid == -1)
+				break;
+		}
+
+		if (list_no_entry(tl, &tid_list_head, list)) {
+			/*
+			 * daemon process has no guarantee that having parent
+			 * pid of 1 anymore due to the systemd, just pick a
+			 * first task which has tid of -1.
+			 */
+			list_for_each_entry(tl, &tid_list_head, list) {
+				if (tl->tid == -1) {
+					pr_dbg3("override parent of daemon to %d\n",
+						tl->pid);
+					tmsg.pid = tl->pid;
+					break;
+				}
+			}
+		}
+
+		if (list_no_entry(tl, &tid_list_head, list))
+			pr_err("cannot find fork pid: %d\n", tmsg.pid);
+
+		tl->tid = tmsg.tid;
+
+		pr_dbg2("MSG FORK2: %d/%d\n", tl->pid, tl->tid);
+
+		write_fork_info(dirname, &tmsg);
+		break;
+
+	case UFTRACE_MSG_SESSION:
+		pr_dbg("SESSION\n");
+		if (msg.len < sizeof(sess))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &sess, sizeof(sess)) < 0)
+			pr_err("reading pipe failed");
+
+		exename = xmalloc(sess.namelen + 1);
+		if (read_all(pfd, exename, sess.namelen) < 0)
+			pr_err("reading pipe failed");
+		exename[sess.namelen] = '\0';
+
+		memcpy(buf, sess.sid, 16);
+		buf[16] = '\0';
+
+		pr_dbg2("MSG SESSION: %d: %s (%s)\n", sess.task.tid, exename, buf);
+
+		write_session_info(dirname, &sess, exename);
+		free(exename);
+		break;
+
+	case UFTRACE_MSG_LOST:
+		if (msg.len < sizeof(lost))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &lost, sizeof(lost)) < 0)
+			pr_err("reading pipe failed");
+
+		shmem_lost_count += lost;
+		break;
+
+	case UFTRACE_MSG_DLOPEN:
+		if (msg.len < sizeof(dmsg))
+			pr_err_ns("invalid message length\n");
+
+		if (read_all(pfd, &dmsg, sizeof(dmsg)) < 0)
+			pr_err("reading pipe failed");
+
+		exename = xmalloc(dmsg.namelen + 1);
+		if (read_all(pfd, exename, dmsg.namelen) < 0)
+			pr_err("reading pipe failed");
+		exename[dmsg.namelen] = '\0';
+
+		pr_dbg2("MSG DLOPEN: %d: %#lx %s\n", dmsg.task.tid, dmsg.base_addr, exename);
+
+		dlib = xmalloc(sizeof(*dlib));
+		dlib->libname = exename;
+		list_add_tail(&dlib->list, &dlopen_libs);
+
+		write_dlopen_info(dirname, &dmsg, exename);
+		/* exename will be freed with the dlib */
+		break;
+
+	case UFTRACE_MSG_FINISH:
+		pr_dbg2("MSG FINISH\n");
+		break;
+
+	default:
+		pr_warn("Unknown message type: %u\n", msg.type);
+		break;
+	}
+}
+
+void setup_uftrace_environ(struct opts *opts, int pfd)
+{
+	printf("setup start\n");
+	make_tmp_environ(opts, pfd);
+	printf("setup end\n");
+}
+
+
+int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
+{
+        uint64_t dummy;
+        close(pfd[0]);
+	setup_uftrace_environ(opts, pfd[1]);
+
+        if (read(ready, &dummy, sizeof(dummy)) != (ssize_t)sizeof(dummy))
+                pr_err("waiting for parent failed");
+
+	// TODO : do inject libmcount-dynamic.so to specific process
+	pr_dbg("ENVIRONMENT READY. NOw INJECTING...\n");	
+
+	// to easier test.
+	//execv("./dlopen", &argv[opts->idx]);
+	inject("libtrigger.so", opts->pid);
+        //abort();
+}
+
+int find_exefile(struct opts *opts) {
+	DIR *directory = opendir("/proc/");
+	char* exePath;
+	int exePathLen;
+	ssize_t len;
+	pid_t pid = opts->pid;
+
+	if (!directory) 
+		return 0;
+	exePath = malloc(exePathLen * sizeof(char));
+	sprintf(exePath, "/proc/%d/exe", pid);
+	exePath[exePathLen-1] = '\0';
+	len = readlink(exePath, absolute_file_path, PATH_MAX - 1);
+	if(len == -1)
+	{
+		free(exePath);
+		return 0;
+	}
+	absolute_file_path[len] = '\0';
+	free(exePath);
+	closedir(directory);
+	opts->exename = absolute_file_path;
 	return 1;
 }
 
-	
-void load_elf_section_range(struct handle *h)
+int command_dynamic(int argc, char *argv[], struct opts *opts)
 {
-	
-	Elf32_Ehdr *ehdr32;
-	Elf32_Shdr *shdr32;
-	Elf64_Ehdr *ehdr64;
-	Elf64_Shdr *shdr64;
+	int pid;
+	int pfd[2];
+	int efd;
+	int ret = -1;
 
-	char *StringTable;
-	int i;
+	if (!find_exefile(opts)) 
+		pr_err("Cannot find executable file path\n");
 
-	h->shdr_count = 0;
-	switch(opts.arch) {
-		case 32:
-			StringTable = h->elf32->StringTable;
-			ehdr32 = h->elf32->ehdr;
-			shdr32 = h->elf32->shdr;
-			
-			for (i = 0; i < ehdr32->e_shnum; i++) {
-				h->sh_range[i].sh_name = xstrdup(&StringTable[shdr32[i].sh_name]);
-				h->sh_range[i].sh_addr = shdr32[i].sh_addr;
-				h->sh_range[i].sh_size = shdr32[i].sh_size;
-				if (h->shdr_count == MAX_SHDRS)
-					break;
-				h->shdr_count++;
-			}
-			break;
-		case 64:
-		  	StringTable = h->elf64->StringTable;
-                        ehdr64 = h->elf64->ehdr;
-                        shdr64 = h->elf64->shdr;
+	pr_dbg("FIND EXECUTABLE FILE PATH : %s\n", opts->exename);
+	if (opts->pid <= 0) 
+		pr_err("process id is invalid\n");
 
-                        for (i = 0; i < ehdr64->e_shnum; i++) {
-                                h->sh_range[i].sh_name = xstrdup(&StringTable[shdr64[i].sh_name]);
-                                h->sh_range[i].sh_addr = shdr64[i].sh_addr;
-                                h->sh_range[i].sh_size = shdr64[i].sh_size;
-				if (h->shdr_count == MAX_SHDRS)
-					break;
-				h->shdr_count++;
-                        }
-                        break;
-		
-	}
-	
+	if (pipe(pfd) < 0)
+		pr_err("cannot setup internal pipe");
+
+	if (create_directory(opts->dirname) < 0)
+		return -1;
+
+	/* apply script-provided options */
+	if (opts->script_file)
+		parse_script_opt(opts);
+
+	has_perf_event = check_linux_perf_event(opts->event);
+
+	fflush(stdout);
+
+	efd = eventfd(0, EFD_CLOEXEC | EFD_SEMAPHORE);
+	if (efd < 0)
+		pr_dbg("creating eventfd failed: %d\n", efd);
+
+	pid = fork();
+
+        if (pid < 0)
+                pr_err("cannot start child process");
+
+        if (pid == 0) 
+		do_inject(pfd, efd, opts, argv);
+        else
+                ret = do_main_loop(pfd, efd, opts, pid);
+        return ret;
 }
-	
-char * get_section_by_range(struct handle *h, unsigned long vaddr)
-{
-	int i;
-
-	for (i = 0; i < h->shdr_count; i++) {
-		if (vaddr >= h->sh_range[i].sh_addr && vaddr <= h->sh_range[i].sh_addr + h->sh_range[i].sh_size)
-			return h->sh_range[i].sh_name;
-	}
-	
-	return NULL;
-}
-	
-
-
-void MapElf64(struct handle *h)
-{
-	int fd;
-        struct stat st;
-
-        if ((fd = open(h->path, O_RDONLY)) < 0) {
-                fprintf(stderr, "Unable to open %s: %s\n", h->path, strerror(errno));
-                exit(-1);
-        }
-
-        if (fstat(fd, &st) < 0) {
-                perror("fstat");
-                exit(-1);
-        }
-
-        h->map = (uint8_t *)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-        if (h->map == MAP_FAILED) {
-                perror("mmap");
-                exit(-1);
-        }
-
-        h->elf64->ehdr = (Elf64_Ehdr *)h->map;
-        h->elf64->shdr = (Elf64_Shdr *)(h->map + h->elf64->ehdr->e_shoff);
-        h->elf64->phdr = (Elf64_Phdr *)(h->map + h->elf64->ehdr->e_phoff);
-
-        h->elf64->StringTable = (char *)&h->map[h->elf64->shdr[h->elf64->ehdr->e_shstrndx].sh_offset];
-	
-	if (h->elf64->ehdr->e_shnum > 0 && h->elf64->ehdr->e_shstrndx != SHN_UNDEF)
-		load_elf_section_range(h);
-
-}
-void sighandle(int sig)
-{
-	fprintf(stdout, "Caught signal ctrl-C, detaching...\n");
-	ptrace(PTRACE_DETACH, global_pid, NULL, NULL);
-	exit(0);
-}
-
-int command_dynamic(int argc, char *argv[], int _pid) {
-	int pid, status;
-	struct handle handle;
-        struct sigaction act;
-        sigset_t set;
-        act.sa_handler = sighandle;
-        sigemptyset (&act.sa_mask);
-        act.sa_flags = 0;
-        sigaction (SIGINT, &act, NULL);
-        sigemptyset (&set);
-        sigaddset (&set, SIGINT);
-
-	memset(&opts, 0, sizeof(opts));
-	pid = _pid;	
-	opts.arch = 64; // default
-        opts.attach++;
-	if (pid < 1) {
-                printf("You must specific process id(pid) to dynamic tracing.\n");
-                exit(1);
-        }
-        printf("implement here! : %d", pid);
-        handle.pid = pid;
-
-
-	/*  
-	 * In this second instance we trace an
-	 * existing process id.
-	 */
-	if (ptrace(PTRACE_ATTACH, handle.pid, NULL, NULL) == -1) {
-		perror("PTRACE_ATTACH");
-		exit(-1);
-	}
-	handle.path = get_path(handle.pid);
-        if (!validate_em_type(handle.path)) {
-        	printf("[!] ELF Architecture is set to %d, the target %s is not the same architecture\n", opts.arch, handle.path);
-        	exit(-1);
-       	}
-
-	waitpid(handle.pid, &status, WUNTRACED);
-	global_pid = handle.pid;
-	examine_process(&handle);
-
-	printf("%s\n", WHITE);
-	ptrace(PTRACE_DETACH, handle.pid, NULL, NULL);
-	exit(0);
-
-}
-
