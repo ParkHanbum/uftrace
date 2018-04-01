@@ -1,3 +1,9 @@
+
+#include <sys/ptrace.h>
+#include <sys/user.h>
+#include <wait.h>
+#include <time.h>
+
 #ifdef ARM
 	#define REG_TYPE user_regs
 #else

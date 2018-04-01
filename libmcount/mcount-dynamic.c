@@ -16,7 +16,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
-
+#include <sys/ptrace.h>
+#include <signal.h>
 /* This should be defined before #include "utils.h" */
 #define PR_FMT     "mcount"
 #define PR_DOMAIN  DBG_MCOUNT
@@ -28,6 +29,9 @@
 #include "utils/symbol.h"
 #include "utils/filter.h"
 #include "utils/script.h"
+#include "utils/debugger.h"
+
+extern void fentry_return(void);
 
 /* time filter in nsec */
 uint64_t mcount_threshold;
@@ -75,6 +79,101 @@ static enum filter_mode __maybe_unused mcount_filter_mode = FILTER_MODE_NONE;
 
 /* tree of trigger actions */
 static struct rb_root __maybe_unused mcount_triggers = RB_ROOT;
+
+void handle_signal(int signal, siginfo_t *siginfo, void *uc0) 
+{
+	const char *signal_name;
+	sigset_t pending;
+	struct timeval val;
+
+	struct ucontext *uc;
+	struct sigcontext *sc;
+	// Find out which signal we're handling
+	switch (signal) {
+		case SIGHUP:
+			signal_name = "SIGHUP";
+			break;
+		case SIGUSR1:
+			signal_name = "SIGUSR1";
+			break;
+		case SIGINT:
+			printf("Caught SIGINT, exiting now\n");
+			exit(0);
+		case SIGTRAP:
+			gettimeofday(&val, NULL);
+			printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+			printf("CATCH SIGTRAP\n");
+			uc = (struct ucontext *)uc0;
+			sc = &uc->uc_mcontext;
+			sc->rip -= 1;
+			uintptr_t* rsp = (uintptr_t *)sc->rsp;
+			uintptr_t* rbp = (uintptr_t *)sc->rbp;
+			for(int i=0;i<10;i++) {
+				printf("ST[%lx] %lx\n", rsp + i, rsp[i]);
+			}
+			printf("CHILD : %lx\n", rsp[0]);	
+			printf("PARENT : %lx\n", (rbp+1));	
+			// __fentry__();
+			mcount_entry(&rsp[1], rsp[0], 0);
+			printf("SIG RIP : %lx\n", sc->rip);
+		
+			printf("RBP : %lx\n", rbp);
+			printf("sleepfunc RET : %lx\n", rbp+1);
+			printf("sleepfunc RET : %lx\n", *((uintptr_t *)(rbp+1)));
+
+			//(uintptr_t *)rbp-1 = fentry_return;
+			//*((uintptr_t *)rbp-1) = fentry_return;
+			*((uintptr_t *)(rbp+1)) = fentry_return;
+			printf("CHANGE PARENT TO fentry_return : %lx\n", *((uintptr_t *)(rbp+1))); 
+			remove_break_point(sc->rip);
+			break;
+		default:
+			fprintf(stderr, "Caught wrong signal: %d\n", signal);
+			return;
+	}
+}
+
+void set_signal_handler() 
+{
+	printf("SIGNAL HANDLER REGISTER\n");
+	struct sigaction sa;
+
+	// Print pid, so that we can send signals from other shells
+	printf("My pid is: %d\n", getpid());
+
+	// Setup the sighub handler
+	sa.sa_handler = &handle_signal;
+
+	// Restart the system call, if at all possible
+	sa.sa_flags = SA_SIGINFO;
+
+	// Block every signal during the handler
+	sigfillset(&sa.sa_mask);
+
+	// Intercept SIGHUP and SIGINT
+	if (sigaction(SIGHUP, &sa, NULL) == -1) {
+		perror("Error: cannot handle SIGHUP"); // Should not happen
+	}
+
+	if (sigaction(SIGTRAP, &sa, NULL) == -1) {
+		perror("Error: cannot handle SIGTRAP"); // Should not happen
+	}
+
+	if (sigaction(SIGUSR1, &sa, NULL) == -1) {
+		perror("Error: cannot handle SIGUSR1"); // Should not happen
+	}
+
+	// Will always fail, SIGKILL is intended to force kill your process
+	if (sigaction(SIGKILL, &sa, NULL) == -1) {
+		perror("Cannot handle SIGKILL"); // Will always happen
+		printf("You can never handle SIGKILL anyway...\n");
+	}
+
+	if (sigaction(SIGINT, &sa, NULL) == -1) {
+		perror("Error: cannot handle SIGINT"); // Should not happen
+	}
+	printf("SIGNAL HANDLER DONE\n");
+}
 
 #ifndef DISABLE_MCOUNT_FILTER
 static void mcount_filter_init(void)
@@ -708,7 +807,7 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
-	pr_dbg("mcount_entry\n");
+	pr_dbg("mcount_entry %lx, %lx, %lx\n", parent_loc, child, regs);
 	enum filter_result filtered;
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
@@ -776,6 +875,7 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 
 unsigned long mcount_exit(long *retval)
 {
+	pr_dbg("mcount_exit\n");
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
 	unsigned long retaddr;
@@ -1344,6 +1444,86 @@ static void setup_environ_from_file() {
 	} while(token = strtok(NULL, "=\n"));
 }
 
+void test_bp()
+{
+	pr_dbg("TEST BP\n");
+	char *dirname;
+	int target_pid = getpid();
+	dirname = getenv("UFTRACE_DIR");
+	if (dirname == NULL)
+		dirname = UFTRACE_DIR_NAME;
+
+	symtabs.dirname = dirname;
+	mcount_exename = read_exename();
+	record_proc_maps(dirname, mcount_session_name(), &symtabs);
+	set_kernel_base(&symtabs, mcount_session_name());
+	load_symtabs(&symtabs, NULL, mcount_exename);
+
+	struct timeval val;
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+	struct symtab uftrace_symtab = symtabs.symtab;
+	// attach to target. pray all child thread have to work correctly.
+
+	printf("TARGET PID : %d\n", target_pid);
+	debugger_init(target_pid);
+	int base_addr = 0x000000;
+	for(int index=0;index < uftrace_symtab.nr_sym;index++) {
+		struct sym _sym = uftrace_symtab.sym[index];
+		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
+
+		// at least, code size must larger than size of int. 
+		if (_sym.size > sizeof(4)) {
+			// set break point and save origin instruction. 
+			set_break_point(base_addr + _sym.addr);
+		}
+	}
+
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+	print_hashmap();
+	pr_dbg("Continue");
+	// continue 
+	/*
+	if(ptrace(PTRACE_CONT, target_pid, NULL, NULL)) {
+		pr_dbg("PTRACE CONTINUE FAILED");
+		exit(1);
+	}
+	*/
+	// set a listener by using waitpid.`
+	/*
+	int status;
+	waitpid(target_pid, &status, 0);
+	pr_dbg("SIGNAL %x", WTERMSIG(status));
+	if (WIFEXITED(status)) {
+		printf("PROCESS EXITED\n");
+	}
+	else if (WIFSIGNALED(status)) {
+		printf("SIGNAL %x\n", WTERMSIG(status));
+
+	}
+	else if (WIFSTOPPED(status)) {
+		printf("STOP %x\n", WTERMSIG(status));
+		// when reach here by SIGTRAP, we record it 
+		// by calling __fentry__.
+		gettimeofday(&val, NULL);
+		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+		remove_break_point();
+		gettimeofday(&val, NULL);
+		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+		// __fentry__();	
+		// restore origin and execute that.
+
+		// set the break-point again. after that continue.
+	}
+	*/
+}
+
+
+
 /*
  * Initializer and Finalizer
  */
@@ -1352,6 +1532,8 @@ mcount_init(void)
 {
 	setup_environ_from_file();
 	mcount_startup();
+	test_bp();	
+	set_signal_handler();
 }
 
 static void __attribute__((destructor))

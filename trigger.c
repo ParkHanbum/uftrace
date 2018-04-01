@@ -3,10 +3,14 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/time.h>
+
+
 
 __attribute__((constructor))
 void so_main() {
-	char* libname = "/libmcount/libmcount-dynamic.so";
+	char* libname = "libmcount/libmcount-dynamic.so";
 	char path[128] = {0, };
 	char* current_path = getcwd(path, sizeof(path));	
 	printf("Current working directory : %s\n", current_path);
@@ -23,4 +27,7 @@ void so_main() {
 		fputs(dlerror(), stdout);
 		exit(1);
         }	
+	
 }
+
+

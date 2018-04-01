@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/user.h>
 #include <wait.h>
+#include <sys/time.h>
 #include "utils/inject-utils.h"
 #include "utils/ptrace.h"
 
@@ -125,6 +126,10 @@ void injectSharedLibrary_end()
 
 int inject(char* libname, pid_t pid)
 {
+        struct timeval val;
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
 	char* libPath = realpath(libname, NULL);
 	pid_t target = 0;
 
@@ -224,6 +229,9 @@ int inject(char* libname, pid_t pid)
 	// now that the new code is in place, let the target run our injected
 	// code.
 	ptrace_cont(target);
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
 	fprintf(stderr, "continue\n");
 
 	// at this point, the target should have run malloc(). check its return
@@ -255,6 +263,10 @@ int inject(char* libname, pid_t pid)
 	// __libc_dlopen_mode.
 	fprintf(stderr, "__libc_dlopen_mode\n");
 	ptrace_cont(target);
+
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
 	fprintf(stderr, "continue\n");
 
 
@@ -289,6 +301,10 @@ int inject(char* libname, pid_t pid)
 	// process. we don't really care whether this succeeds, so don't
 	// bother checking the return value.
 	ptrace_cont(target);
+
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
 	fprintf(stderr, "continue\n");
 
 
@@ -300,5 +316,8 @@ int inject(char* libname, pid_t pid)
 	free(newcode);
 
 	printf("DONE\n");
+	gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
 	return 0;
 }

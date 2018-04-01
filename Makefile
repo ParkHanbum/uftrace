@@ -115,6 +115,15 @@ LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/script.c $(srcdir)/utils/script-python.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/auto-args.c
 LIBMCOUNT_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_UTILS_SRCS))
 
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/symbol.c $(srcdir)/utils/debug.c
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/rbtree.c $(srcdir)/utils/filter.c
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/demangle.c $(srcdir)/utils/utils.c
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/script.c $(srcdir)/utils/script-python.c
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/auto-args.c $(srcdir)/utils/debugger.c
+LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/ptrace.c $(srcdir)/utils/hashmap.c 
+
+LIBMCOUNT_DYN_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_DYN_UTILS_SRCS))
+
 LIBMCOUNT_NOP_SRCS := $(srcdir)/libmcount/mcount-nop.c
 LIBMCOUNT_NOP_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_NOP_SRCS))
 
@@ -157,6 +166,9 @@ config: $(srcdir)/configure
 $(LIBMCOUNT_UTILS_OBJS): $(objdir)/libmcount/%.op: $(srcdir)/utils/%.c $(LIBMCOUNT_DEPS)
 	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
+$(LIBMCOUNT_DYN_UTILS_OBJS): $(objdir)/libmcount/%.op: $(srcdir)/utils/%.c $(LIBMCOUNT_DEPS)
+	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
+
 $(LIBMCOUNT_OBJS): $(objdir)/%.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
 	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
@@ -178,7 +190,7 @@ $(LIBMCOUNT_NOP_OBJS): $(objdir)/%.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
 $(objdir)/libmcount/libmcount.so: $(LIBMCOUNT_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
-$(objdir)/libmcount/libmcount-dynamic.so: $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
+$(objdir)/libmcount/libmcount-dynamic.so: $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_DYN_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
 $(objdir)/libmcount/libmcount-fast.so: $(LIBMCOUNT_FAST_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)

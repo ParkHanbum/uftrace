@@ -19,6 +19,8 @@
 #include <sys/epoll.h>
 #include <fnmatch.h>
 #include <linux/limits.h>
+#include <sys/ptrace.h>
+#include <sys/time.h>
 
 #include "uftrace.h"
 #include "cmd-record.h"
@@ -29,6 +31,7 @@
 #include "utils/filter.h"
 #include "utils/kernel.h"
 #include "utils/perf.h"
+#include "utils/debugger.h"
 
 #define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
@@ -527,8 +530,16 @@ void setup_uftrace_environ(struct opts *opts, int pfd)
 }
 
 
+
+struct symtabs symtabs = {
+        .flags = SYMTAB_FL_DEMANGLE | SYMTAB_FL_ADJ_OFFSET,
+};
+
+void test_bp(struct opts *opts);
+
 int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
 {
+	int target_pid = opts->pid;
         uint64_t dummy;
         close(pfd[0]);
 	setup_uftrace_environ(opts, pfd[1]);
@@ -541,8 +552,75 @@ int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
 
 	// to easier test.
 	//execv("./dlopen", &argv[opts->idx]);
-	inject("libtrigger.so", opts->pid);
+	inject("libtrigger.so", target_pid);
         //abort();
+
+	//test_bp(opts);
+}
+
+void test_bp(struct opts *opts)
+{
+	pr_dbg("TEST BP\n");
+	int target_pid = opts->pid;
+	symtabs.dirname = opts->dirname;
+	load_symtabs(&symtabs, NULL, opts->exename);
+
+        struct timeval val;
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+	struct symtab uftrace_symtab = symtabs.symtab;
+	// attach to target. pray all child thread have to work correctly.
+	debugger_init(target_pid);
+	int base_addr = 0x400000;
+	for(int index=0;index < uftrace_symtab.nr_sym;index++) {
+		struct sym _sym = uftrace_symtab.sym[index];
+		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
+		
+		// at least, code size must larger than size of int. 
+		if (_sym.size > sizeof(4)) {
+			// set break point and save origin instruction. 
+			set_break_point(base_addr + _sym.addr);
+		}
+		
+	}
+
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+	print_hashmap();
+	pr_dbg("Continue");
+	// continue 
+	if(ptrace(PTRACE_CONT, target_pid, NULL, NULL)) {
+		pr_dbg("PTRACE CONTINUE FAILED");
+		exit(1);
+	}
+	// set a listener by using waitpid.`
+	int status;
+	waitpid(target_pid, &status, 0);
+	pr_dbg("SIGNAL %x", WTERMSIG(status));
+	if (WIFEXITED(status)) {
+		printf("PROCESS EXITED\n");
+	}
+	else if (WIFSIGNALED(status)) {
+		printf("SIGNAL %x\n", WTERMSIG(status));
+
+	}
+	else if (WIFSTOPPED(status)) {
+		printf("STOP %x\n", WTERMSIG(status));
+		// when reach here by SIGTRAP, we record it 
+		// by calling __fentry__.
+		gettimeofday(&val, NULL);
+		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+		remove_break_point();
+		gettimeofday(&val, NULL);
+		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+
+		// __fentry__();	
+		// restore origin and execute that.
+		
+		// set the break-point again. after that continue.
+	}
 }
 
 int find_exefile(struct opts *opts) {

@@ -1682,6 +1682,7 @@ static int stop_tracing(struct writer_data *wd, struct opts *opts)
 				ret = UFTRACE_EXIT_SUCCESS;
 		}
 		else {
+			pr_dbg("DEBUG : NOT WIFEXITED \n");
 			pr_yellow("child terminated by signal: %d: %s\n",
 				  WTERMSIG(status), strsignal(WTERMSIG(status)));
 			ret = UFTRACE_EXIT_SIGNALED;
