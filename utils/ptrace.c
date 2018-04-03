@@ -96,8 +96,8 @@ void ptrace_cont(pid_t target)
 {
 	struct timespec* sleeptime = malloc(sizeof(struct timespec));
 
-	sleeptime->tv_sec = 1;
-	sleeptime->tv_nsec = 5000000;
+	sleeptime->tv_sec = 3;
+	sleeptime->tv_nsec = 0000000;
 
 	if(ptrace(PTRACE_CONT, target, NULL, NULL) == -1)
 	{
@@ -240,6 +240,8 @@ void ptrace_write(int pid, unsigned long addr, void *vptr, int len)
 
 void checktargetsig(int pid)
 {
+	struct timeval val;
+        
 	// check the signal that the child stopped with.
 	siginfo_t targetsig = ptrace_getsiginfo(pid);
 
@@ -247,6 +249,9 @@ void checktargetsig(int pid)
 	// segfault).
 	if(targetsig.si_signo != SIGTRAP)
 	{
+		
+		gettimeofday(&val, NULL);
+		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 		fprintf(stderr, "instead of expected SIGTRAP, target stopped with signal %d: %s\n", targetsig.si_signo, strsignal(targetsig.si_signo));
 		fprintf(stderr, "sending process %d a SIGSTOP signal for debugging purposes\n", pid);
 		ptrace(PTRACE_CONT, pid, NULL, SIGSTOP);

@@ -80,6 +80,9 @@ static enum filter_mode __maybe_unused mcount_filter_mode = FILTER_MODE_NONE;
 /* tree of trigger actions */
 static struct rb_root __maybe_unused mcount_triggers = RB_ROOT;
 
+/* save the breakpoint address had restored recently */
+static uintptr_t restored_bp; 
+
 void handle_signal(int signal, siginfo_t *siginfo, void *uc0) 
 {
 	const char *signal_name;
@@ -88,6 +91,8 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 
 	struct ucontext *uc;
 	struct sigcontext *sc;
+	uint64_t rip;
+
 	// Find out which signal we're handling
 	switch (signal) {
 		case SIGHUP:
@@ -105,6 +110,8 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 			printf("CATCH SIGTRAP\n");
 			uc = (struct ucontext *)uc0;
 			sc = &uc->uc_mcontext;
+			rip = sc->rip -1;
+			restored_bp = rip;
 			sc->rip -= 1;
 			uintptr_t* rsp = (uintptr_t *)sc->rsp;
 			uintptr_t* rbp = (uintptr_t *)sc->rbp;
@@ -112,20 +119,28 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 				printf("ST[%lx] %lx\n", rsp + i, rsp[i]);
 			}
 			printf("CHILD : %lx\n", rsp[0]);	
-			printf("PARENT : %lx\n", (rbp+1));	
+			printf("PARENT : %lx\n",rbp[1]);	
 			// __fentry__();
-			mcount_entry(&rsp[1], rsp[0], 0);
+			//mcount_entry(&rbp[1], rsp[0], 0);
+			mcount_entry(&rsp[0], rip, 0);
 			printf("SIG RIP : %lx\n", sc->rip);
-		
 			printf("RBP : %lx\n", rbp);
-			printf("sleepfunc RET : %lx\n", rbp+1);
-			printf("sleepfunc RET : %lx\n", *((uintptr_t *)(rbp+1)));
+			printf("caller RET addr : %lx\n", rbp+1);
+			printf("caller RET valv : %lx\n", *((uintptr_t *)(rbp+1)));
 
 			//(uintptr_t *)rbp-1 = fentry_return;
 			//*((uintptr_t *)rbp-1) = fentry_return;
-			*((uintptr_t *)(rbp+1)) = fentry_return;
-			printf("CHANGE PARENT TO fentry_return : %lx\n", *((uintptr_t *)(rbp+1))); 
+
+			// rsp[0] = fentry_return;
+			// printf("Change caller RET %lx to fentry_return : %lx\n", &rsp[0], rsp[0]); 
+
+			//*((uintptr_t *)(rbp+1)) = fentry_return;
+			//printf("Change caller RET to fentry_return : %lx\n", *((uintptr_t *)(rbp+1))); 
 			remove_break_point(sc->rip);
+			for(int i=0;i<10;i++) {
+				printf("ST[%lx] %lx\n", rsp + i, rsp[i]);
+			}
+
 			break;
 		default:
 			fprintf(stderr, "Caught wrong signal: %d\n", signal);
@@ -875,7 +890,7 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 
 unsigned long mcount_exit(long *retval)
 {
-	pr_dbg("mcount_exit\n");
+	pr_dbg("[mcount_exit] restored_bp : %lx\n", restored_bp);
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
 	unsigned long retaddr;
@@ -897,6 +912,7 @@ unsigned long mcount_exit(long *retval)
 	mcount_exit_filter_record(mtdp, rstack, retval);
 
 	retaddr = rstack->parent_ip;
+	set_break_point(restored_bp);	
 
 	compiler_barrier();
 

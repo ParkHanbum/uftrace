@@ -261,6 +261,8 @@ int inject(char* libname, pid_t pid)
 
 	// continue the target's execution again in order to call
 	// __libc_dlopen_mode.
+        gettimeofday(&val, NULL);
+        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 	fprintf(stderr, "__libc_dlopen_mode\n");
 	ptrace_cont(target);
 
