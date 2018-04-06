@@ -3,9 +3,13 @@
 #include <time.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <dlfcn.h>
 
+struct timeval val;
+struct timespec* sleeptime;
+int count = 0;
 
 void _func1() {
 }
@@ -18,11 +22,14 @@ void _func4() {
 void _func5() {
 }
 void _func6() {
+	nanosleep(sleeptime, NULL);
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 
 void sleepfunc()
 {
-	struct timespec* sleeptime = malloc(sizeof(struct timespec));
+	sleeptime = malloc(sizeof(struct timespec));
 
 	sleeptime->tv_sec = 1;
 	sleeptime->tv_nsec = 0;
@@ -33,7 +40,9 @@ void sleepfunc()
 	while(1)
 	{
 		printf("sleeping...%d \n", pid);
-		nanosleep(sleeptime, NULL);
+		_func6();
+		if (count > 11) break;
+		count++;
 	}
 
 	free(sleeptime);
