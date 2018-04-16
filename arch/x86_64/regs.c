@@ -1,4 +1,5 @@
-#include "mcount-arch.h"
+#include "mcount-cpu.h"
+//#include "mcount-arch.h"
 #include "utils/utils.h"
 
 struct x86_reg_table {

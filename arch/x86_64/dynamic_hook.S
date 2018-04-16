@@ -26,7 +26,7 @@
 
 #include "utils/asm.h"
 
-GLOBAL(__fentry__)
+GLOBAL(__dentry__)
 	.cfi_startproc
 	/*
 	 * 48 is needed because of the 16-byte
@@ -56,12 +56,19 @@ GLOBAL(__fentry__)
 	/* mcount_args */
 	movq %rsp, %rdx
 
-	call mcount_entry
+	/* 
+	dynamic_entry returns the address 
+	holding the patched original code.
+	*/
+	call dynamic_entry
 	cmpq $0, %rax
-	jne 1f
+	jz 1f
 
+	// return address will be replaced.
+	movq %rax, 48(%rsp)
+		
 	/* hijack return address */
-	movabs $fentry_return@GOTOFF, %rdx
+	movabs $dentry_return@GOTOFF, %rdx
 	lea _GLOBAL_OFFSET_TABLE_(%rip), %rcx
 	add %rcx, %rdx
 	movq %rdx, 56(%rsp)
@@ -78,10 +85,10 @@ GLOBAL(__fentry__)
 
 	retq
 	.cfi_endproc
-END(__fentry__)
+END(__dentry__)
 
 
-ENTRY(fentry_return)
+ENTRY(dentry_return)
 	.cfi_startproc
 	sub  $32, %rsp
 	.cfi_def_cfa_offset 32
@@ -106,5 +113,5 @@ ENTRY(fentry_return)
 
 	retq
 	.cfi_endproc
-END(fentry_return)
+END(dentry_return)
 

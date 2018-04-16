@@ -14,24 +14,402 @@
 #include <fcntl.h>
 #include <assert.h>
 #include <signal.h>
+#include <sys/mman.h>
+#include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/ptrace.h>
 #include <signal.h>
+
+/* include for using capstone */
+#include <inttypes.h>
+#include <capstone/capstone.h>
+#include <capstone/platform.h>
 /* This should be defined before #include "utils.h" */
 #define PR_FMT     "mcount"
 #define PR_DOMAIN  DBG_MCOUNT
 
 #include "libmcount/mcount.h"
 #include "libmcount/internal.h"
-#include "mcount-arch.h"
 #include "utils/utils.h"
 #include "utils/symbol.h"
 #include "utils/filter.h"
 #include "utils/script.h"
 #include "utils/debugger.h"
 
+#define SETRWX(addr, len)   mprotect((void*)((addr) &~ 0xFFF),\
+                                     (len) + ((addr) - ((addr) &~ 0xFFF)),\
+                                     PROT_READ | PROT_EXEC | PROT_WRITE)
+#define SETROX(addr, len)   mprotect((void*)((addr) &~ 0xFFF),\
+                                     (len) + ((addr) - ((addr) &~ 0xFFF)),\
+                                     PROT_READ | PROT_EXEC)
+
 extern void fentry_return(void);
+extern unsigned long plthook_resolver_addr;
+
+// TODO : conform with feature
+// 0 of pltgot_addr is replaced with record function. 
+extern unsigned long pltgot_addr;
+
+// call relative address 
+// there is no instruction to jumping 64bit address directly.
+static unsigned char g_call_insn[] =  
+{0xFF, 0x15, 0x00, 0x00, 0x00, 0x00};
+
+static unsigned char g_jmp_insn[] = 
+{0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+
+static const int instruction_size = sizeof(g_call_insn); 
+
+csh csh_handle;
+extern cs_err cs_open(cs_arch arch, cs_mode mode, csh *handle);
+
+typedef unsigned char* puchar;
+
+static void print_string_hex(char *comment, unsigned char *str, size_t len)
+{
+	unsigned char *c;
+
+	printf("%s", comment);
+	for (c = str; c < str + len; c++) {
+		printf("0x%02x ", *c & 0xff);
+	}
+
+	printf("\n");
+}
+
+puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_size) 
+{
+	// calc relative address of addr between pltgot_addr;
+	unsigned long rel_addr = pltgot_addr - addr - instruction_size;
+	puchar ptr = &rel_addr;
+	puchar save_addr, code_addr;
+
+	// make instruction to patch. 	
+	for(int i=0;i < 4;i++) {
+		printf("%02x\n", *(ptr+i));
+		call_insn[2 + i] = *(ptr+i); // FF 15 XX XX XX XX 
+	}
+	print_string_hex("INSTRUMENT INSTRUCTION : ", call_insn, instruction_size);
+
+	uintptr_t alloc_addr = malloc(code_size);	
+	SETRWX(alloc_addr, code_size);
+
+	save_addr = (puchar)alloc_addr;
+	code_addr = (puchar)addr;
+
+	// patch the code!!
+	for(int i=0;i < code_size;i++) {
+		save_addr[i] = code_addr[i];
+		if (i > instruction_size-1) {
+			printf("patching... : %x to %x \n", code_addr[i], 0x90);
+			code_addr[i] = 0x90; 
+		} else {
+			printf("patching... : %x to %x \n", code_addr[i], call_insn[i]);
+			code_addr[i] = call_insn[i];	
+		}
+	}
+	
+	// inject jump to return origin 
+	save_addr[code_size+0] = g_jmp_insn[0];
+	save_addr[code_size+1] = g_jmp_insn[1];
+	save_addr[code_size+2] = g_jmp_insn[2];
+	save_addr[code_size+3] = g_jmp_insn[3];
+	save_addr[code_size+4] = g_jmp_insn[4];
+	save_addr[code_size+5] = g_jmp_insn[5];
+
+	*((uintptr_t *)(&save_addr[code_size+6])) = &code_addr[code_size];
+	
+	
+	return save_addr;
+}
+
+__attribute__((always_inline))
+inline char* hex_to_string(unsigned char hex) 
+{
+	char str[5] = {0,};	
+	sprintf(str, "\\x%x", hex);
+	printf("hex to string %s\n", str);
+	printf("hex to string %lx\n", &str);
+	return str;
+}
+
+
+static void print_insn_detail(csh ud, cs_mode mode, cs_insn *ins)
+{
+	int count, i;
+	csh handle = ud;
+	cs_x86 *x86;
+
+	// detail can be NULL on "data" instruction if SKIPDATA option is turned ON
+	if (ins->detail == NULL)
+		return;
+	
+	printf("\tinstruction size : %d\n", ins->size);
+	printf("\tinstruction addr : 0x%x\n", ins->address);	
+	print_string_hex("\tinstructions : ", (unsigned char *)ins->address, ins->size);
+	x86 = &(ins->detail->x86);
+
+	print_string_hex("\tPrefix:", x86->prefix, 4);
+	print_string_hex("\tOpcode:", x86->opcode, 4);
+
+	printf("\trex: 0x%x\n", x86->rex);
+	printf("\taddr_size: %u\n", x86->addr_size);
+	printf("\tmodrm: 0x%x\n", x86->modrm);
+	printf("\tdisp: 0x%x\n", x86->disp);
+
+	// SIB is not available in 16-bit mode
+	if ((mode & CS_MODE_16) == 0) {
+		printf("\tsib: 0x%x\n", x86->sib);
+		if (x86->sib_base != X86_REG_INVALID)
+			printf("\t\tsib_base: %s\n", cs_reg_name(handle, x86->sib_base));
+		if (x86->sib_index != X86_REG_INVALID)
+			printf("\t\tsib_index: %s\n", cs_reg_name(handle, x86->sib_index));
+		if (x86->sib_scale != 0)
+			printf("\t\tsib_scale: %d\n", x86->sib_scale);
+	}
+
+	// SSE code condition
+	if (x86->sse_cc != X86_SSE_CC_INVALID) {
+		printf("\tsse_cc: %u\n", x86->sse_cc);
+	}
+
+	// AVX code condition
+	if (x86->avx_cc != X86_AVX_CC_INVALID) {
+		printf("\tavx_cc: %u\n", x86->avx_cc);
+	}
+
+	// AVX Suppress All Exception
+	if (x86->avx_sae) {
+		printf("\tavx_sae: %u\n", x86->avx_sae);
+	}
+
+	// AVX Rounding Mode
+	if (x86->avx_rm != X86_AVX_RM_INVALID) {
+		printf("\tavx_rm: %u\n", x86->avx_rm);
+	}
+
+	count = cs_op_count(ud, ins, X86_OP_IMM);
+	if (count) {
+		printf("\timm_count: %u\n", count);
+		for (i = 1; i < count + 1; i++) {
+			int index = cs_op_index(ud, ins, X86_OP_IMM, i);
+			printf("\t\timms[%u]: 0x%" PRIx64 "\n", i, x86->operands[index].imm);
+		}
+	}
+
+	if (x86->op_count)
+		printf("\top_count: %u\n", x86->op_count);
+	for (i = 0; i < x86->op_count; i++) {
+		cs_x86_op *op = &(x86->operands[i]);
+
+		switch((int)op->type) {
+			case X86_OP_REG:
+				printf("\t\toperands[%u].type: REG = %s\n", i, cs_reg_name(handle, op->reg));
+				break;
+			case X86_OP_IMM:
+				printf("\t\toperands[%u].type: IMM = 0x%" PRIx64 "\n", i, op->imm);
+				break;
+			case X86_OP_MEM:
+				printf("\t\toperands[%u].type: MEM\n", i);
+				if (op->mem.segment != X86_REG_INVALID)
+					printf("\t\t\toperands[%u].mem.segment: REG = %s\n", i, cs_reg_name(handle, op->mem.segment));
+				if (op->mem.base != X86_REG_INVALID)
+					printf("\t\t\toperands[%u].mem.base: REG = %s\n", i, cs_reg_name(handle, op->mem.base));
+				if (op->mem.index != X86_REG_INVALID)
+					printf("\t\t\toperands[%u].mem.index: REG = %s\n", i, cs_reg_name(handle, op->mem.index));
+				if (op->mem.scale != 1)
+					printf("\t\t\toperands[%u].mem.scale: %u\n", i, op->mem.scale);
+				if (op->mem.disp != 0)
+					printf("\t\t\toperands[%u].mem.disp: 0x%" PRIx64 "\n", i, op->mem.disp);
+				break;
+			default:
+				break;
+		}
+
+		// AVX broadcast type
+		if (op->avx_bcast != X86_AVX_BCAST_INVALID)
+			printf("\t\toperands[%u].avx_bcast: %u\n", i, op->avx_bcast);
+
+		// AVX zero opmask {z}
+		if (op->avx_zero_opmask != false)
+			printf("\t\toperands[%u].avx_zero_opmask: TRUE\n", i);
+
+		printf("\t\toperands[%u].size: %u\n", i, op->size);
+	}
+
+	printf("\n");
+}
+
+#define CAN_USE_DYNAMIC 0x1
+#define NOT_USE_DYNAMIC 0x2
+
+// following function must be implemented in each architecture. 
+int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
+{
+	int count, i;
+	csh handle = ud;
+	cs_x86 *x86;
+
+	// default.  
+	int status = NOT_USE_DYNAMIC;
+
+	// detail can be NULL on "data" instruction if SKIPDATA option is turned ON
+	if (ins->detail == NULL)
+		return status;
+	
+	x86 = &(ins->detail->x86);
+
+	if (!x86->op_count)
+		return CAN_USE_DYNAMIC;
+		
+	pr_dbg2("0x%" PRIx64 "[%02d]:\t%s\t%s\n", ins->address, ins->size, ins->mnemonic, ins->op_str);
+	for (i = 0; i < x86->op_count; i++) {
+		cs_x86_op *op = &(x86->operands[i]);
+
+		switch((int)op->type) {
+			case X86_OP_REG:
+				status = CAN_USE_DYNAMIC;
+				pr_dbg2("\t\toperands[%u].type: REG = %s\n", i, cs_reg_name(handle, op->reg));
+				break;
+			case X86_OP_IMM:
+				status = CAN_USE_DYNAMIC;
+				pr_dbg2("\t\toperands[%u].type: IMM = 0x%" PRIx64 "\n", i, op->imm);
+				break;
+			case X86_OP_MEM:
+				// temporary till discover possibility of x86 instructions. 
+				status = NOT_USE_DYNAMIC;
+				pr_dbg2("\t\toperands[%u].type: MEM\n", i);
+				if (op->mem.segment != X86_REG_INVALID)
+					pr_dbg2("\t\t\toperands[%u].mem.segment: REG = %s\n", i, cs_reg_name(handle, op->mem.segment));
+				if (op->mem.base != X86_REG_INVALID)
+					pr_dbg2("\t\t\toperands[%u].mem.base: REG = %s\n", i, cs_reg_name(handle, op->mem.base));
+				if (op->mem.index != X86_REG_INVALID)
+					pr_dbg2("\t\t\toperands[%u].mem.index: REG = %s\n", i, cs_reg_name(handle, op->mem.index));
+				if (op->mem.scale != 1)
+					pr_dbg2("\t\t\toperands[%u].mem.scale: %u\n", i, op->mem.scale);
+				if (op->mem.disp != 0)
+					pr_dbg2("\t\t\toperands[%u].mem.disp: 0x%" PRIx64 "\n", i, op->mem.disp);
+				return status;
+			default:
+				break;
+		}
+	}
+	return status;
+}
+
+
+struct address_entry {
+	uintptr_t addr;
+	uintptr_t saved_addr;
+	struct list_head list;
+};
+
+static LIST_HEAD(address_list);
+
+
+// live code patch a.k.a instrumentation. 
+int do_dynamic_instrument(uintptr_t address, uint32_t insn_size) 
+{
+	pr_dbg("Do dynamic instrument\n");
+	struct address_entry* el;
+	puchar saved_code;
+	saved_code = patch_code(address, &g_call_insn, insn_size);
+	if (saved_code) {
+		// TODO : keep and manage saved_code chunks.
+		pr_dbg("Keep original instruction : %llx\n", (uintptr_t)saved_code);
+		el = malloc(sizeof(struct address_entry));
+		el->addr = address;
+		el->saved_addr = saved_code;
+		
+		list_add_tail(&el->list, &address_list); 
+
+	} else {
+		// TODO : error handling
+		pr_err("GRRRRRRRRRRRRRRRRRRRRR......\n");
+	}
+}
+
+#define INSTRUMENT_ERR_INSTRUCTION		0x0001
+#define INSTRUMENT_ERR_OTHERWISE		0x0002
+#define INSTRUMENT_SUCCESS			0x0000
+
+int dynamic_instrument(uintptr_t address, uint32_t size) 
+{
+	pr_dbg("read memory at %lx amount : %d \n", address, size);
+
+	cs_insn *insn;
+	int code_size = 0;
+	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
+	printf("DISASM:\n");
+	int j;
+	for(j = 0;j < count;j++) {
+		printf("0x%" PRIx64 "[%02d]: %s  %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
+		int dynamicable = instruction_dynamicable(csh_handle, CS_MODE_64, &insn[j]);
+		if (dynamicable & NOT_USE_DYNAMIC) { 
+			pr_dbg("%d\n", dynamicable);
+			pr_dbg("The instruction not supported : %s\t %s\n", insn[j].mnemonic, insn[j].op_str);
+			return INSTRUMENT_ERR_INSTRUCTION; 
+		}
+
+		code_size += insn[j].size;
+		if (code_size > instruction_size -1) {
+			break;
+		} 
+	}
+	
+	do_dynamic_instrument(address, code_size);	
+	cs_free(insn, count);	
+	return INSTRUMENT_SUCCESS; 
+}
+
+void read_memory(uintptr_t address, uint32_t size) 
+{
+	pr_dbg("read memory at %lx amount : %d \n", address, size);
+
+	cs_insn *insn;
+	int code_size = 0;
+	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
+	printf("DISASM:\n");
+	int j;
+	for(j = 0;j < count;j++) {
+		code_size += insn[j].size;
+		printf("0x%" PRIx64 ": %s  %s\n", insn[j].address, insn[j].mnemonic, insn[j].op_str);
+		printf("0x%" PRIx64 ": %d \n", insn[j].address, insn[j].size);
+		print_insn_detail(csh_handle, CS_MODE_64, &insn[j]);
+		int dynamicable = instruction_dynamicable(csh_handle, CS_MODE_64, &insn[j]);
+		if (dynamicable && NOT_USE_DYNAMIC) return -1; 
+
+		if (code_size > 7) {
+			break;
+		} 
+	}
+	cs_free(insn, count);	
+}
+
+int disassembler_init() 
+{
+	// TODO : we have to determined architecture and mode when compile.
+	if(cs_open(CS_ARCH_X86, CS_MODE_64, &csh_handle) != CS_ERR_OK) {
+		pr_dbg("CANNOT OPEN CAPSTONE\n");
+		return -1;
+	}
+	cs_option(csh_handle, CS_OPT_DETAIL, CS_OPT_ON);
+	pr_dbg("CREATE CAPSTONE SUCCESS\n");	
+	return 0;
+}
+
+void disassemble(uintptr_t address, uint32_t size) 
+{
+	// read_memory(address, size);
+	dynamic_instrument(address, size);
+	struct address_entry* entry;
+	
+	printf("=================================\n");
+	list_for_each_entry(entry, &address_list, list) {
+		printf("%lx %lx\n", entry->addr, entry->saved_addr);
+	}
+}
 
 /* time filter in nsec */
 uint64_t mcount_threshold;
@@ -819,6 +1197,44 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 }
 #endif
 
+uintptr_t find_origin_code_addr(uintptr_t addr)
+{
+	uintptr_t patched_addr, ret_addr = NULL;
+	patched_addr = addr - instruction_size;
+	struct address_entry* entry;	
+	list_for_each_entry(entry, &address_list, list) {
+
+		if (entry->addr == patched_addr) {
+			pr_dbg("found patched address : %lx\n", entry->addr);
+			ret_addr = entry->saved_addr;
+			break;
+		}
+	}
+	pr_dbg("Address : %lx %lx\n", entry->addr, entry->saved_addr);
+
+	return ret_addr;
+}
+
+int dynamic_entry(unsigned long *parent_loc, unsigned long child, 
+		 struct mcount_regs *regs)
+{
+	pr_dbg("dynamic_entry %lx, %lx, %lx\n", parent_loc, child, regs);
+	int result;
+	result = mcount_entry(parent_loc, child, regs);
+	
+	if (!result) {
+		/*
+		   dynamic_entry returns the address
+		   holding the patched original code.
+		 */
+		uintptr_t origin_code_addr = find_origin_code_addr(child);
+		return origin_code_addr;
+	} else {
+		// at here, 0 mean there is no patched. 
+		return 0;
+	}
+}
+
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
@@ -890,7 +1306,7 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 
 unsigned long mcount_exit(long *retval)
 {
-	pr_dbg("[mcount_exit] restored_bp : %lx\n", restored_bp);
+	pr_dbg("[mcount_exit] : %lx\n", retval);
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
 	unsigned long retaddr;
@@ -912,7 +1328,7 @@ unsigned long mcount_exit(long *retval)
 	mcount_exit_filter_record(mtdp, rstack, retval);
 
 	retaddr = rstack->parent_ip;
-	set_break_point(restored_bp);	
+	// set_break_point(restored_bp);	
 
 	compiler_barrier();
 
@@ -1485,19 +1901,27 @@ void test_bp()
 	printf("TARGET PID : %d\n", target_pid);
 	debugger_init(target_pid);
 	int base_addr = 0x000000;
+
+	disassembler_init();
 	for(int index=0;index < uftrace_symtab.nr_sym;index++) {
 		struct sym _sym = uftrace_symtab.sym[index];
 		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
 
-		// at least, code size must larger than size of int. 
-		if (_sym.size > sizeof(4)) {
+		
+		// at least, function need to bigger then call instruction. 
+		// TODO : conform with feature.
+		if (_sym.size > sizeof(g_call_insn)) {
 			// set break point and save origin instruction. 
-			set_break_point(base_addr + _sym.addr);
+			// set_break_point(base_addr + _sym.addr);
+			disassemble(_sym.addr, _sym.size);
 		}
 	}
 
 	gettimeofday(&val, NULL);
 	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+	pr_dbg("PLTHOOK : %lx\n", plthook_resolver_addr);
+	pr_dbg("PLTHOOK : %lx\n", pltgot_addr);
+
 
 	print_hashmap();
 	pr_dbg("Continue");
@@ -1549,7 +1973,7 @@ mcount_init(void)
 	setup_environ_from_file();
 	mcount_startup();
 	test_bp();	
-	set_signal_handler();
+	//set_signal_handler();
 }
 
 static void __attribute__((destructor))

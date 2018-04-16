@@ -35,6 +35,8 @@
 
 #define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
+extern void record_mmap_file(const char *dirname, char *sess_id, int bufsize);
+
 struct shmem_list {
 	struct list_head list;
 	char id[SHMEM_NAME_SIZE];

@@ -703,6 +703,13 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 }
 #endif
 
+// TODO : follow function is no need for libmcount.
+int dynamic_entry(unsigned long *parent_loc, unsigned long child, 
+		 struct mcount_regs *regs)
+{
+	return 0;
+}
+
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {

@@ -38,7 +38,7 @@ bool hashmapBpEquals(void* keyA, void* keyB) {
 void bp_hashmap_init() 
 {
 	map = hashmapCreate(10, hashmapBpHash, hashmapBpEquals);
-	// for proof of concept,
+	// TODO :: for proof of concept,
 	mprotect(0x400000, getpagesize(), PROT_READ | PROT_WRITE | PROT_EXEC);
 }
 

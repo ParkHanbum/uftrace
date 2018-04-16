@@ -24,6 +24,7 @@
 
 extern struct symtabs symtabs;
 
+unsigned long pltgot_addr;
 unsigned long plthook_resolver_addr;
 
 static LIST_HEAD(plthook_modules);
@@ -157,6 +158,7 @@ static void restore_plt_functions(struct plthook_data *pd)
 	}
 }
 
+extern void __weak __dentry__(void);
 extern void __weak plt_hooker(void);
 extern unsigned long plthook_return(void);
 
@@ -171,7 +173,7 @@ static int find_got(Elf *elf, const char *modname,
 	size_t i;
 	bool plt_found = false;
 	bool bind_now = false;
-	unsigned long pltgot_addr = 0;
+	//unsigned long pltgot_addr = 0;
 	struct plthook_data *pd;
 	Elf_Scn *sec = NULL;
 	size_t shstr_idx;
@@ -255,6 +257,10 @@ static int find_got(Elf *elf, const char *modname,
 	pr_dbg("hook the plt-resolver to uftrace\n");
 	pr_dbg2("overwt : [%u] %p\t %p\n", 2, pd->pltgot_ptr[2], plt_hooker);
 	overwrite_pltgot(pd, 2, plt_hooker);
+
+	// TODO : must remove followed code. 	
+	pr_dbg("TEST for discover that why did exist GOT[0]\n"); 
+	overwrite_pltgot(pd, 0, __dentry__);
 	if (bind_now) {
 		mcount_arch_undo_bindnow(elf, pd);
 
@@ -741,6 +747,7 @@ __weak unsigned long mcount_arch_child_idx(unsigned long child_idx)
 unsigned long plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 			    unsigned long module_id, struct mcount_regs *regs)
 {
+	pr_dbg("PLTHOOK ENTRY : \n");
 	struct sym *sym;
 	struct mcount_thread_data *mtdp = NULL;
 	struct mcount_ret_stack *rstack;

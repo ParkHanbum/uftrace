@@ -94,8 +94,15 @@ _TARGETS := uftrace libtraceevent/libtraceevent.a
 _TARGETS += $(LIBMCOUNT_TARGETS) libmcount/libmcount-nop.so
 TARGETS  := $(patsubst %,$(objdir)/%,$(_TARGETS))
 
-UFTRACE_SRCS := $(srcdir)/uftrace.c $(wildcard $(srcdir)/cmd-*.c $(srcdir)/utils/*.c)
+UFTRACE_SRCS := $(srcdir)/uftrace.c 
+UFTRACE_SRCS += $(filter-out $(srcdir)/cmd-dynamic.c,$(wildcard $(srcdir)/cmd-*.c $(srcdir)/utils/*.c))
 UFTRACE_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.o,$(UFTRACE_SRCS))
+
+# without dynamic tracing feature. 
+ifdef HAVE_LIB_CAPSTONE
+UFTRACE_SRCS += $(srcdir)/cmd-dynamic.c
+UFTRACE_OBJS += $(srcdir)/cmd-dynamic.o
+endif 
 
 UFTRACE_ARCH_OBJS := $(objdir)/arch/$(ARCH)/uftrace.o
 
@@ -163,6 +170,7 @@ $(objdir)/.config: $(srcdir)/configure $(srcdir)/check-deps/Makefile
 config: $(srcdir)/configure
 	$(QUIET_GEN)$(srcdir)/configure -o $(objdir)/.config $(MAKEOVERRIDES)
 
+
 $(LIBMCOUNT_UTILS_OBJS): $(objdir)/libmcount/%.op: $(srcdir)/utils/%.c $(LIBMCOUNT_DEPS)
 	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
@@ -191,7 +199,7 @@ $(objdir)/libmcount/libmcount.so: $(LIBMCOUNT_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LI
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
 $(objdir)/libmcount/libmcount-dynamic.so: $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_DYN_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
-	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
+	$(QUIET_LINK)$(CC) -shared -o $@ $^ -lcapstone $(LIB_LDFLAGS)
 
 $(objdir)/libmcount/libmcount-fast.so: $(LIBMCOUNT_FAST_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
