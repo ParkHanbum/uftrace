@@ -112,6 +112,8 @@ static void write_environ(int fd, char* key, char* value)
 static void make_tmp_environ(struct opts *opts, int pfd)
 {
 	char buf[4096];
+	char *old_preload, *old_libpath;
+	bool must_use_multi_thread = check_libpthread(opts->exename);
 	int env_fd;
 	char name[] = "/tmp/uftrace_environ_file";
 	
@@ -126,9 +128,22 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 		buf[0] = '\0';
 	}
 
-	printf("LOG setup environ\n");
-	snprintf(buf, sizeof(buf), "%d", getpid());
-	write_environ(env_fd, "UFTRACE_PID", buf);
+#ifdef INSTALL_LIB_PATH
+	strcat(buf, INSTALL_LIB_PATH);
+#endif
+
+	old_libpath = getenv("LD_LIBRARY_PATH");
+	if (old_libpath) {
+		size_t len = strlen(buf) + strlen(old_libpath) + 2;
+		char *libpath = xmalloc(len);
+
+		snprintf(libpath, len, "%s:%s", buf, old_libpath);
+		setenv("LD_LIBRARY_PATH", libpath, 1);
+		free(libpath);
+	}
+	else
+		setenv("LD_LIBRARY_PATH", buf, 1);
+
 	if (opts->filter) {
 		char *filter_str = uftrace_clear_kernel(opts->filter);
 
@@ -278,11 +293,28 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 		snprintf(buf, sizeof(buf), "%s/libmcount/", opts->lib_path);
 	else
 		buf[0] = '\0';  /* to make strcat() work */
-
 	strcat(buf, "libmcount-dynamic.so");
 	pr_dbg("using %s library for tracing\n", buf);
+
+	old_preload = getenv("LD_PRELOAD");
+	if (old_preload) {
+		size_t len = strlen(buf) + strlen(old_preload) + 2;
+		char *preload = xmalloc(len);
+
+		snprintf(preload, len, "%s:%s", buf, old_preload);
+		setenv("LD_PRELOAD", preload, 1);
+		free(preload);
+	}
+	else
+		setenv("LD_PRELOAD", buf, 1);
 	write_environ(env_fd, "TRACE_LIBRARY", buf);
 
+	// for DYNAMIC
+	printf("LOG setup environ\n");
+	snprintf(buf, sizeof(buf), "%d", getpid());
+	write_environ(env_fd, "UFTRACE_PID", buf);
+
+	// The below code should be placed at the end.	
 	setenv("XRAY_OPTIONS", "patch_premain=false", 1);
 	write_environ(env_fd, "XRAY_OPTIONS", "patch_premain=false");
 }
@@ -650,19 +682,36 @@ int find_exefile(struct opts *opts) {
 	return 1;
 }
 
+int dynamic_child_exec(int pfd[2], int ready, struct opts *opts, char *argv[])
+{
+	uint64_t dummy;
+
+	close(pfd[0]);
+
+	setup_uftrace_environ(opts, pfd[1]);
+
+	/* wait for parent ready */
+	if (read(ready, &dummy, sizeof(dummy)) != (ssize_t)sizeof(dummy))
+		pr_err("waiting for parent failed");
+
+	/*
+	 * I don't think the traced binary is in PATH.
+	 * So use plain 'execv' rather than 'execvp'.
+	 */
+	execv(opts->exename, &argv[opts->idx]);
+	abort();
+}
+
+#define DYNAMIC_TO_PROCESS 0
+#define DYNAMIC_TO_PROGRAM 1
+
 int command_dynamic(int argc, char *argv[], struct opts *opts)
 {
 	int pid;
 	int pfd[2];
 	int efd;
 	int ret = -1;
-
-	if (!find_exefile(opts)) 
-		pr_err("Cannot find executable file path\n");
-
-	pr_dbg("FIND EXECUTABLE FILE PATH : %s\n", opts->exename);
-	if (opts->pid <= 0) 
-		pr_err("process id is invalid\n");
+	int flag = DYNAMIC_TO_PROCESS;
 
 	if (pipe(pfd) < 0)
 		pr_err("cannot setup internal pipe");
@@ -673,6 +722,26 @@ int command_dynamic(int argc, char *argv[], struct opts *opts)
 	/* apply script-provided options */
 	if (opts->script_file)
 		parse_script_opt(opts);
+
+
+	/************
+	* dynamic stub start
+	*************/
+	if (!opts->pid) {
+		pr_dbg("Dynamic Trace to Program\n");
+		flag = DYNAMIC_TO_PROGRAM;
+	} else {
+		pr_dbg("Dynamic Trace to already running Program\n");
+		flag = DYNAMIC_TO_PROCESS;
+
+		if (!find_exefile(opts)) 
+			pr_err("Cannot find executable file path\n");
+	}
+	
+	pr_dbg("FIND EXECUTABLE FILE PATH : %s\n", opts->exename);
+	
+
+	// dynamic stub END
 
 	has_perf_event = check_linux_perf_event(opts->event);
 
@@ -687,9 +756,28 @@ int command_dynamic(int argc, char *argv[], struct opts *opts)
         if (pid < 0)
                 pr_err("cannot start child process");
 
-        if (pid == 0) 
-		do_inject(pfd, efd, opts, argv);
-        else
-                ret = do_main_loop(pfd, efd, opts, pid);
-        return ret;
+	if (flag) {
+		// Dynamic to program
+		if (pid == 0) {
+			if (opts->keep_pid)
+				ret = do_main_loop(pfd, efd, opts, getppid());
+			else
+				dynamic_child_exec(pfd, efd, opts, argv);
+			return ret;
+		}
+
+		if (opts->keep_pid)
+			dynamic_child_exec(pfd, efd, opts, argv);
+		else
+			ret = do_main_loop(pfd, efd, opts, pid);
+
+	} else {
+		// Dynamic to process
+		if (pid == 0)  
+			do_inject(pfd, efd, opts, argv);
+		else
+			ret = do_main_loop(pfd, efd, opts, pid);
+
+	}
+	return ret;
 }

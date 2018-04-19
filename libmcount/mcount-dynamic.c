@@ -1682,10 +1682,14 @@ static void mcount_startup(void)
 	page_size_in_kb = getpagesize() / KB;
 
 	if (uftrace_pid_str) {
+		pr_dbg("uftrace process PID : %s\n", uftrace_pid_str);
 		uftrace_pid = strtol(uftrace_pid_str, NULL, 0);
 		if (uftrace_pid == NULL) {
 			pr_err_ns("ERROR");
 		}
+	} else {
+		pr_dbg("uftrace process PID : %s\n", uftrace_pid_str);
+		pr_err_ns("ERROR");
 	} 
 
 	if (logfd_str) {
