@@ -78,12 +78,28 @@ static void print_string_hex(char *comment, unsigned char *str, size_t len)
 	printf("\n");
 }
 
+void print_disassemble(uintptr_t address, uint32_t size) 
+{
+	cs_insn *insn;
+	int code_size = 0;
+	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
+	printf("DISASM:\n");
+	int j;
+	for(j = 0;j < count;j++) {
+		printf("0x%"PRIx64"[%02d]:%s %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
+	}
+	
+	cs_free(insn, count);	
+}
+
 puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_size) 
 {
 	// calc relative address of addr between pltgot_addr;
 	unsigned long rel_addr = pltgot_addr - addr - instruction_size;
 	puchar ptr = &rel_addr;
 	puchar save_addr, code_addr;
+	// expand code_size to include return instruction.
+	uint32_t saved_code_size = code_size + sizeof(g_jmp_insn) + sizeof(long);
 
 	// make instruction to patch. 	
 	for(int i=0;i < 4;i++) {
@@ -92,8 +108,9 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	}
 	print_string_hex("INSTRUMENT INSTRUCTION : ", call_insn, instruction_size);
 
-	uintptr_t alloc_addr = malloc(code_size);	
-	SETRWX(alloc_addr, code_size);
+	uintptr_t alloc_addr = malloc(saved_code_size);	
+	memset(alloc_addr, NULL, saved_code_size); 
+	SETRWX(alloc_addr, saved_code_size);
 
 	save_addr = (puchar)alloc_addr;
 	code_addr = (puchar)addr;
@@ -119,7 +136,10 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	save_addr[code_size+5] = g_jmp_insn[5];
 
 	*((uintptr_t *)(&save_addr[code_size+6])) = &code_addr[code_size];
+	printf("RETURN ADDRESS : %llx\n", &code_addr[code_size]);
 	
+	print_disassemble(save_addr, saved_code_size); 
+	print_disassemble(addr, code_size);
 	
 	return save_addr;
 }
@@ -137,14 +157,27 @@ inline char* hex_to_string(unsigned char hex)
 
 static void print_insn_detail(csh ud, cs_mode mode, cs_insn *ins)
 {
+	pr_dbg("PRINT INSTRUCTION DETAIL \n");
 	int count, i;
 	csh handle = ud;
 	cs_x86 *x86;
+        cs_detail *detail;
 
 	// detail can be NULL on "data" instruction if SKIPDATA option is turned ON
 	if (ins->detail == NULL)
 		return;
-	
+
+	detail = ins->detail;
+
+	// print the groups this instruction belong to
+	if (detail->groups_count > 0) {
+		printf("\tThis instruction belongs to groups: ");
+		for (int n = 0; n < detail->groups_count; n++) {
+			printf("%s ", cs_group_name(handle, detail->groups[n]));
+		}
+		printf("\n");
+	}
+
 	printf("\tinstruction size : %d\n", ins->size);
 	printf("\tinstruction addr : 0x%x\n", ins->address);	
 	print_string_hex("\tinstructions : ", (unsigned char *)ins->address, ins->size);
@@ -250,6 +283,8 @@ int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
 	int count, i;
 	csh handle = ud;
 	cs_x86 *x86;
+        cs_detail *detail;
+	bool CALLnJMP = false;
 
 	// default.  
 	int status = NOT_USE_DYNAMIC;
@@ -258,6 +293,22 @@ int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
 	if (ins->detail == NULL)
 		return status;
 	
+	detail = ins->detail;
+
+	// print the groups this instruction belong to
+	if (detail->groups_count > 0) {
+		pr_dbg2("\tThis instruction belongs to groups: ");
+		for (int n = 0; n < detail->groups_count; n++) {
+			pr_dbg2("%s ", cs_group_name(handle, detail->groups[n]));
+			if (detail->groups[n] == X86_GRP_CALL 
+				|| detail->groups[n] == X86_GRP_JUMP) {
+				pr_dbg2("%s ", cs_group_name(handle, detail->groups[n]));
+				CALLnJMP = true;
+			}
+		}
+		pr_dbg2("\n");
+	}
+
 	x86 = &(ins->detail->x86);
 
 	if (!x86->op_count)
@@ -273,7 +324,12 @@ int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
 				pr_dbg2("\t\toperands[%u].type: REG = %s\n", i, cs_reg_name(handle, op->reg));
 				break;
 			case X86_OP_IMM:
-				status = CAN_USE_DYNAMIC;
+				if (CALLnJMP) {	
+					status = NOT_USE_DYNAMIC;
+					return status;
+				} else {
+					status = CAN_USE_DYNAMIC;
+				}
 				pr_dbg2("\t\toperands[%u].type: IMM = 0x%" PRIx64 "\n", i, op->imm);
 				break;
 			case X86_OP_MEM:
@@ -1835,6 +1891,7 @@ void __visible_default mcount_reset(void)
 	mcount_rstack_reset(mtdp);
 }
 
+/*
 void __visible_default __cyg_profile_func_enter(void *child, void *parent)
 {
 	cygprof_entry((unsigned long)parent, (unsigned long)child);
@@ -1846,6 +1903,7 @@ void __visible_default __cyg_profile_func_exit(void *child, void *parent)
 	cygprof_exit((unsigned long)parent, (unsigned long)child);
 }
 UFTRACE_ALIAS(__cyg_profile_func_exit);
+*/
 
 #ifndef UNIT_TEST
 
@@ -1899,11 +1957,26 @@ void test_bp()
 	gettimeofday(&val, NULL);
 	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 
+	struct uftrace_mmap *map, *curr;
+	map = symtabs.maps;
+	printf("CHECK MMAP \n");
+	while (map) {
+		curr = map;
+		map = map->next;
+		// check 	
+		if (curr->prot[2] == 'x') {
+			uint64_t size = curr->end - curr->start;
+			printf("0x%lx - 0x%lx\n", curr->start, curr->end);
+			printf("SIZE : 0x%lx\n", size);
+			SETRWX(curr->start, size); 
+		}
+	}
 	struct symtab uftrace_symtab = symtabs.symtab;
 	// attach to target. pray all child thread have to work correctly.
 
 	printf("TARGET PID : %d\n", target_pid);
-	debugger_init(target_pid);
+	// debugger_init(target_pid);
+	mprotect(0x400000, getpagesize(), PROT_READ | PROT_WRITE | PROT_EXEC);
 	int base_addr = 0x000000;
 
 	disassembler_init();
@@ -1925,45 +1998,7 @@ void test_bp()
 	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 	pr_dbg("PLTHOOK : %lx\n", plthook_resolver_addr);
 	pr_dbg("PLTHOOK : %lx\n", pltgot_addr);
-
-
-	print_hashmap();
 	pr_dbg("Continue");
-	// continue 
-	/*
-	if(ptrace(PTRACE_CONT, target_pid, NULL, NULL)) {
-		pr_dbg("PTRACE CONTINUE FAILED");
-		exit(1);
-	}
-	*/
-	// set a listener by using waitpid.`
-	/*
-	int status;
-	waitpid(target_pid, &status, 0);
-	pr_dbg("SIGNAL %x", WTERMSIG(status));
-	if (WIFEXITED(status)) {
-		printf("PROCESS EXITED\n");
-	}
-	else if (WIFSIGNALED(status)) {
-		printf("SIGNAL %x\n", WTERMSIG(status));
-
-	}
-	else if (WIFSTOPPED(status)) {
-		printf("STOP %x\n", WTERMSIG(status));
-		// when reach here by SIGTRAP, we record it 
-		// by calling __fentry__.
-		gettimeofday(&val, NULL);
-		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
-		remove_break_point();
-		gettimeofday(&val, NULL);
-		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
-
-		// __fentry__();	
-		// restore origin and execute that.
-
-		// set the break-point again. after that continue.
-	}
-	*/
 }
 
 
