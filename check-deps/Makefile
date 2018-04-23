@@ -9,6 +9,7 @@ CHECK_LIST += perf_context_switch
 #CHECK_LIST += arm_has_hardfp
 CHECK_LIST += have_libcapstone
 
+
 #
 # This is needed for checking build dependency
 #

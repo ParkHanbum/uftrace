@@ -596,6 +596,7 @@ void test_bp(struct opts *opts)
 {
 	pr_dbg("TEST BP\n");
 	int target_pid = opts->pid;
+	int index;
 	symtabs.dirname = opts->dirname;
 	load_symtabs(&symtabs, NULL, opts->exename);
 
@@ -607,7 +608,7 @@ void test_bp(struct opts *opts)
 	// attach to target. pray all child thread have to work correctly.
 	debugger_init(target_pid);
 	int base_addr = 0x400000;
-	for(int index=0;index < uftrace_symtab.nr_sym;index++) {
+	for(index=0;index < uftrace_symtab.nr_sym;index++) {
 		struct sym _sym = uftrace_symtab.sym[index];
 		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
 		

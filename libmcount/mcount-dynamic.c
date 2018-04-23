@@ -100,9 +100,10 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	puchar save_addr, code_addr;
 	// expand code_size to include return instruction.
 	uint32_t saved_code_size = code_size + sizeof(g_jmp_insn) + sizeof(long);
+	int i;
 
 	// make instruction to patch. 	
-	for(int i=0;i < 4;i++) {
+	for(i=0;i < 4;i++) {
 		printf("%02x\n", *(ptr+i));
 		call_insn[2 + i] = *(ptr+i); // FF 15 XX XX XX XX 
 	}
@@ -116,7 +117,7 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	code_addr = (puchar)addr;
 
 	// patch the code!!
-	for(int i=0;i < code_size;i++) {
+	for(i=0;i < code_size;i++) {
 		save_addr[i] = code_addr[i];
 		if (i > instruction_size-1) {
 			printf("patching... : %x to %x \n", code_addr[i], 0x90);
@@ -158,7 +159,7 @@ inline char* hex_to_string(unsigned char hex)
 static void print_insn_detail(csh ud, cs_mode mode, cs_insn *ins)
 {
 	pr_dbg("PRINT INSTRUCTION DETAIL \n");
-	int count, i;
+	int count, i, n;
 	csh handle = ud;
 	cs_x86 *x86;
         cs_detail *detail;
@@ -172,7 +173,7 @@ static void print_insn_detail(csh ud, cs_mode mode, cs_insn *ins)
 	// print the groups this instruction belong to
 	if (detail->groups_count > 0) {
 		printf("\tThis instruction belongs to groups: ");
-		for (int n = 0; n < detail->groups_count; n++) {
+		for (n = 0; n < detail->groups_count; n++) {
 			printf("%s ", cs_group_name(handle, detail->groups[n]));
 		}
 		printf("\n");
@@ -280,7 +281,7 @@ static void print_insn_detail(csh ud, cs_mode mode, cs_insn *ins)
 // following function must be implemented in each architecture. 
 int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
 {
-	int count, i;
+	int count, i, n;
 	csh handle = ud;
 	cs_x86 *x86;
         cs_detail *detail;
@@ -298,7 +299,7 @@ int instruction_dynamicable(csh ud, cs_mode mode, cs_insn *ins)
 	// print the groups this instruction belong to
 	if (detail->groups_count > 0) {
 		pr_dbg2("\tThis instruction belongs to groups: ");
-		for (int n = 0; n < detail->groups_count; n++) {
+		for (n = 0; n < detail->groups_count; n++) {
 			pr_dbg2("%s ", cs_group_name(handle, detail->groups[n]));
 			if (detail->groups[n] == X86_GRP_CALL 
 				|| detail->groups[n] == X86_GRP_JUMP) {
@@ -526,6 +527,7 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 	struct ucontext *uc;
 	struct sigcontext *sc;
 	uint64_t rip;
+	int i;
 
 	// Find out which signal we're handling
 	switch (signal) {
@@ -549,7 +551,7 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 			sc->rip -= 1;
 			uintptr_t* rsp = (uintptr_t *)sc->rsp;
 			uintptr_t* rbp = (uintptr_t *)sc->rbp;
-			for(int i=0;i<10;i++) {
+			for(i=0;i<10;i++) {
 				printf("ST[%lx] %lx\n", rsp + i, rsp[i]);
 			}
 			printf("CHILD : %lx\n", rsp[0]);	
@@ -571,7 +573,7 @@ void handle_signal(int signal, siginfo_t *siginfo, void *uc0)
 			//*((uintptr_t *)(rbp+1)) = fentry_return;
 			//printf("Change caller RET to fentry_return : %lx\n", *((uintptr_t *)(rbp+1))); 
 			remove_break_point(sc->rip);
-			for(int i=0;i<10;i++) {
+			for(i=0;i<10;i++) {
 				printf("ST[%lx] %lx\n", rsp + i, rsp[i]);
 			}
 
@@ -1978,9 +1980,10 @@ void test_bp()
 	// debugger_init(target_pid);
 	mprotect(0x400000, getpagesize(), PROT_READ | PROT_WRITE | PROT_EXEC);
 	int base_addr = 0x000000;
+	int index;
 
 	disassembler_init();
-	for(int index=0;index < uftrace_symtab.nr_sym;index++) {
+	for(index=0;index < uftrace_symtab.nr_sym;index++) {
 		struct sym _sym = uftrace_symtab.sym[index];
 		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
 

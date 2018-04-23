@@ -119,20 +119,10 @@ if [ ! -e ${srcdir}/check-deps/have_libelf ] && [ ! -f ${with_elfutils}/lib/libe
     exit 1
 fi
 
-if [ ! -e ${srcdir}/check-deps/have_capstone ]; then
+if [ ! -e ${srcdir}/check-deps/have_libcapstone ]; then
     echo "Warning: cannot find 'libcapstone' (from libcapstone): "
     echo "if you want using dynamic tracing feature, please install it. " 
     echo "\"sudo apt install libcapstone3\"."
-else
-    echo "=================================="
-    echo "=================================="
-   echo "=================================="
-   echo "=================================="
-   echo "=================================="
-   echo "=================================="
-   echo "=================================="
-
-    export HAVE_LIB_CAPSTONE = 1
 fi
 
 
