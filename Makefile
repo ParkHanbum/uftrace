@@ -88,7 +88,6 @@ include $(srcdir)/Makefile.include
 
 LIBMCOUNT_TARGETS := libmcount/libmcount.so libmcount/libmcount-fast.so
 LIBMCOUNT_TARGETS += libmcount/libmcount-single.so libmcount/libmcount-fast-single.so
-LIBMCOUNT_TARGETS += libmcount/libmcount-dynamic.so
 
 _TARGETS := uftrace libtraceevent/libtraceevent.a
 _TARGETS += $(LIBMCOUNT_TARGETS) libmcount/libmcount-nop.so
@@ -97,12 +96,6 @@ TARGETS  := $(patsubst %,$(objdir)/%,$(_TARGETS))
 UFTRACE_SRCS := $(srcdir)/uftrace.c 
 UFTRACE_SRCS += $(filter-out $(srcdir)/cmd-dynamic.c,$(wildcard $(srcdir)/cmd-*.c $(srcdir)/utils/*.c))
 UFTRACE_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.o,$(UFTRACE_SRCS))
-
-# without dynamic tracing feature. 
-ifdef HAVE_LIB_CAPSTONE
-UFTRACE_SRCS += $(srcdir)/cmd-dynamic.c
-UFTRACE_OBJS += $(srcdir)/cmd-dynamic.o
-endif 
 
 UFTRACE_ARCH_OBJS := $(objdir)/arch/$(ARCH)/uftrace.o
 
@@ -122,6 +115,11 @@ LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/script.c $(srcdir)/utils/script-python.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/auto-args.c
 LIBMCOUNT_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_UTILS_SRCS))
 
+# without dynamic tracing feature. 
+ifdef HAVE_LIB_CAPSTONE
+UFTRACE_SRCS += $(srcdir)/cmd-dynamic.c
+UFTRACE_OBJS += $(srcdir)/cmd-dynamic.o
+
 LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/symbol.c $(srcdir)/utils/debug.c
 LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/rbtree.c $(srcdir)/utils/filter.c
 LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/demangle.c $(srcdir)/utils/utils.c
@@ -130,14 +128,15 @@ LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/auto-args.c $(srcdir)/utils/debugger
 LIBMCOUNT_DYN_UTILS_SRCS += $(srcdir)/utils/ptrace.c $(srcdir)/utils/hashmap.c 
 
 LIBMCOUNT_DYN_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_DYN_UTILS_SRCS))
+LIBMCOUNT_DYNAMIC_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-dynamic.op,$(_LIBMCOUNT_OBJS))
+endif 
+
 
 LIBMCOUNT_NOP_SRCS := $(srcdir)/libmcount/mcount-nop.c
 LIBMCOUNT_NOP_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_NOP_SRCS))
 
 _LIBMCOUNT_SRCS := $(filter-out %mcount.c,$(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c)))
 _LIBMCOUNT_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(_LIBMCOUNT_SRCS))
-LIBMCOUNT_DYNAMIC_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-dynamic.op,$(_LIBMCOUNT_OBJS))
-
 LIBMCOUNT_ARCH_OBJS := $(objdir)/arch/$(ARCH)/mcount-entry.op
 
 COMMON_DEPS := $(objdir)/.config $(UFTRACE_HDRS)
@@ -198,8 +197,10 @@ $(LIBMCOUNT_NOP_OBJS): $(objdir)/%.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
 $(objdir)/libmcount/libmcount.so: $(LIBMCOUNT_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
+ifdef HAVE_LIB_CAPSTONE
 $(objdir)/libmcount/libmcount-dynamic.so: $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_DYN_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ -lcapstone $(LIB_LDFLAGS)
+endif
 
 $(objdir)/libmcount/libmcount-fast.so: $(LIBMCOUNT_FAST_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
