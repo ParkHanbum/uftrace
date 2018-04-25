@@ -704,6 +704,7 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 #endif
 
 // TODO : follow function is no need for libmcount.
+__weak
 int dynamic_entry(unsigned long *parent_loc, unsigned long child, 
 		 struct mcount_regs *regs)
 {

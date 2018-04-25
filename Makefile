@@ -175,9 +175,6 @@ config: $(srcdir)/configure
 $(LIBMCOUNT_UTILS_OBJS): $(objdir)/libmcount/%.op: $(srcdir)/utils/%.c $(LIBMCOUNT_DEPS)
 	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
-$(LIBMCOUNT_DYN_UTILS_OBJS): $(objdir)/libmcount/%.op: $(srcdir)/utils/%.c $(LIBMCOUNT_DEPS)
-	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
-
 $(LIBMCOUNT_OBJS): $(objdir)/%.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
 	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
@@ -200,7 +197,7 @@ $(objdir)/libmcount/libmcount.so: $(LIBMCOUNT_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LI
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
 ifdef HAVE_LIB_CAPSTONE
-$(objdir)/libmcount/libmcount-dynamic.so: $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_DYN_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
+$(objdir)/libmcount/libmcount-dynamic.so: $(objdir)/libmcount/mcount.op $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ -lcapstone $(LIB_LDFLAGS)
 endif
 

@@ -19,7 +19,6 @@
 #include <sys/epoll.h>
 #include <fnmatch.h>
 
-#include "cmd-record.h"
 #include "uftrace.h"
 #include "libmcount/mcount.h"
 #include "utils/utils.h"
@@ -335,9 +334,7 @@ static int fill_file_header(struct opts *opts, int status, struct rusage *rusage
 	fd = open(filename, O_WRONLY | O_CREAT| O_TRUNC, 0644);
 	if (fd < 0)
 		pr_err("cannot open info file");
-	pr_dbg("DEBUG#0_0\n");
 	efd = open(opts->exename, O_RDONLY);
-	pr_dbg("DEBUG %d \t %s\n", efd, opts->exename);
 	if (efd < 0)
 		goto close_fd;
 
@@ -357,12 +354,10 @@ static int fill_file_header(struct opts *opts, int status, struct rusage *rusage
 
 	if (write(fd, &hdr, sizeof(hdr)) != (int)sizeof(hdr))
 		pr_err("writing header info failed");
-	pr_dbg("DEBUG#0_2\n");
 	fill_uftrace_info(&hdr.info_mask, fd, opts, status,
 			  rusage, elapsed_time);
 
 try_write:
-	pr_dbg("DEBUG#1\n");
 	ret = pwrite(fd, &hdr, sizeof(hdr), 0);
 	if (ret != (int)sizeof(hdr)) {
 		static int retry = 0;
@@ -377,10 +372,8 @@ try_write:
 	ret = 0;
 
 close_efd:
-	pr_dbg("DEBUG#1\n");
 	close(efd);
 close_fd:
-	pr_dbg("DEBUG#2\n");
 	close(fd);
 	free(filename);
 
@@ -723,6 +716,7 @@ static void copy_to_buffer(struct mcount_shmem_buffer *shm, char *sess_id)
 	pthread_mutex_unlock(&write_list_lock);
 }
 
+__visible_default 
 static void record_mmap_file(const char *dirname, char *sess_id, int bufsize)
 {
 	int fd;

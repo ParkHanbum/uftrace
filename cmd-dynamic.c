@@ -23,7 +23,6 @@
 #include <sys/time.h>
 
 #include "uftrace.h"
-#include "cmd-record.h"
 #include "libmcount/mcount.h"
 #include "utils/utils.h"
 #include "utils/symbol.h"
@@ -36,6 +35,8 @@
 #define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
 extern void record_mmap_file(const char *dirname, char *sess_id, int bufsize);
+extern void flush_old_shmem(const char *dirname, int tid, int bufsize);
+extern void add_tid_list(int pid, int tid);
 
 struct shmem_list {
 	struct list_head list;
@@ -337,236 +338,11 @@ struct dlopen_list {
 
 static LIST_HEAD(dlopen_libs);
 
-static void read_record_mmap(int pfd, const char *dirname, int bufsize)
-{
-	char buf[128];
-	struct shmem_list *sl, *tmp;
-	struct tid_list *tl, *pos;
-	struct uftrace_msg msg;
-	struct uftrace_msg_task tmsg;
-	struct uftrace_msg_sess sess;
-	struct uftrace_msg_dlopen dmsg;
-	struct dlopen_list *dlib;
-	char *exename;
-	int lost;
-
-	if (read_all(pfd, &msg, sizeof(msg)) < 0)
-		pr_err("reading pipe failed:");
-
-	if (msg.magic != UFTRACE_MSG_MAGIC)
-		pr_err_ns("invalid message received: %x\n", msg.magic);
-
-	switch (msg.type) {
-	case UFTRACE_MSG_REC_START:
-		pr_dbg("MSG_REC_START\n");
-		if (msg.len >= SHMEM_NAME_SIZE)
-			pr_err_ns("invalid message length\n");
-
-		sl = xmalloc(sizeof(*sl));
-
-		if (read_all(pfd, sl->id, msg.len) < 0)
-			pr_err("reading pipe failed");
-
-		sl->id[msg.len] = '\0';
-		pr_dbg2("MSG START: %s\n", sl->id);
-
-		/* link to shmem_list */
-		list_add_tail(&sl->list, &shmem_list_head);
-		break;
-
-	case UFTRACE_MSG_REC_END:
-		pr_dbg("UFTRACE_MSG_REC_END\n");
-		if (msg.len >= SHMEM_NAME_SIZE)
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, buf, msg.len) < 0)
-			pr_err("reading pipe failed");
-
-		buf[msg.len] = '\0';
-		pr_dbg2("MSG  END : %s\n", buf);
-
-		/* remove from shmem_list */
-		list_for_each_entry_safe(sl, tmp, &shmem_list_head, list) {
-			if (!memcmp(sl->id, buf, SHMEM_NAME_SIZE)) {
-				list_del(&sl->list);
-				free(sl);
-				break;
-			}
-		}
-
-		record_mmap_file(dirname, buf, bufsize);
-		break;
-
-	case UFTRACE_MSG_TASK_START:
-		pr_dbg("UFTRACE_MSG_TASK_START\n");
-		if (msg.len != sizeof(tmsg))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
-			pr_err("reading pipe failed");
-
-		pr_dbg2("MSG TASK_START : %d/%d\n", tmsg.pid, tmsg.tid);
-
-		/* check existing tid (due to exec) */
-		list_for_each_entry(pos, &tid_list_head, list) {
-			if (pos->tid == tmsg.tid) {
-				flush_old_shmem(dirname, tmsg.tid, bufsize);
-				break;
-			}
-		}
-
-		if (list_no_entry(pos, &tid_list_head, list))
-			add_tid_list(tmsg.pid, tmsg.tid);
-
-		write_task_info(dirname, &tmsg);
-		break;
-
-	case UFTRACE_MSG_TASK_END:
-		pr_dbg("UFTRACE_MSG_TASK_END\n");
-		if (msg.len != sizeof(tmsg))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
-			pr_err("reading pipe failed");
-
-		pr_dbg2("MSG TASK_END : %d/%d\n", tmsg.pid, tmsg.tid);
-
-		/* mark test exited */
-		list_for_each_entry(pos, &tid_list_head, list) {
-			if (pos->tid == tmsg.tid) {
-				pos->exited = true;
-				break;
-			}
-		}
-		break;
-
-	case UFTRACE_MSG_FORK_START:
-		pr_dbg("FORK\n");
-		if (msg.len != sizeof(tmsg))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
-			pr_err("reading pipe failed");
-
-		pr_dbg2("MSG FORK1: %d/%d\n", tmsg.pid, -1);
-
-		add_tid_list(tmsg.pid, -1);
-		break;
-
-	case UFTRACE_MSG_FORK_END:
-		if (msg.len != sizeof(tmsg))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &tmsg, sizeof(tmsg)) < 0)
-			pr_err("reading pipe failed");
-
-		list_for_each_entry(tl, &tid_list_head, list) {
-			if (tl->pid == tmsg.pid && tl->tid == -1)
-				break;
-		}
-
-		if (list_no_entry(tl, &tid_list_head, list)) {
-			/*
-			 * daemon process has no guarantee that having parent
-			 * pid of 1 anymore due to the systemd, just pick a
-			 * first task which has tid of -1.
-			 */
-			list_for_each_entry(tl, &tid_list_head, list) {
-				if (tl->tid == -1) {
-					pr_dbg3("override parent of daemon to %d\n",
-						tl->pid);
-					tmsg.pid = tl->pid;
-					break;
-				}
-			}
-		}
-
-		if (list_no_entry(tl, &tid_list_head, list))
-			pr_err("cannot find fork pid: %d\n", tmsg.pid);
-
-		tl->tid = tmsg.tid;
-
-		pr_dbg2("MSG FORK2: %d/%d\n", tl->pid, tl->tid);
-
-		write_fork_info(dirname, &tmsg);
-		break;
-
-	case UFTRACE_MSG_SESSION:
-		pr_dbg("SESSION\n");
-		if (msg.len < sizeof(sess))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &sess, sizeof(sess)) < 0)
-			pr_err("reading pipe failed");
-
-		exename = xmalloc(sess.namelen + 1);
-		if (read_all(pfd, exename, sess.namelen) < 0)
-			pr_err("reading pipe failed");
-		exename[sess.namelen] = '\0';
-
-		memcpy(buf, sess.sid, 16);
-		buf[16] = '\0';
-
-		pr_dbg2("MSG SESSION: %d: %s (%s)\n", sess.task.tid, exename, buf);
-
-		write_session_info(dirname, &sess, exename);
-		free(exename);
-		break;
-
-	case UFTRACE_MSG_LOST:
-		if (msg.len < sizeof(lost))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &lost, sizeof(lost)) < 0)
-			pr_err("reading pipe failed");
-
-		shmem_lost_count += lost;
-		break;
-
-	case UFTRACE_MSG_DLOPEN:
-		if (msg.len < sizeof(dmsg))
-			pr_err_ns("invalid message length\n");
-
-		if (read_all(pfd, &dmsg, sizeof(dmsg)) < 0)
-			pr_err("reading pipe failed");
-
-		exename = xmalloc(dmsg.namelen + 1);
-		if (read_all(pfd, exename, dmsg.namelen) < 0)
-			pr_err("reading pipe failed");
-		exename[dmsg.namelen] = '\0';
-
-		pr_dbg2("MSG DLOPEN: %d: %#lx %s\n", dmsg.task.tid, dmsg.base_addr, exename);
-
-		dlib = xmalloc(sizeof(*dlib));
-		dlib->libname = exename;
-		list_add_tail(&dlib->list, &dlopen_libs);
-
-		write_dlopen_info(dirname, &dmsg, exename);
-		/* exename will be freed with the dlib */
-		break;
-
-	case UFTRACE_MSG_FINISH:
-		pr_dbg2("MSG FINISH\n");
-		break;
-
-	default:
-		pr_warn("Unknown message type: %u\n", msg.type);
-		break;
-	}
-}
 
 void setup_uftrace_environ(struct opts *opts, int pfd)
 {
 	make_tmp_environ(opts, pfd);
 }
-
-
-
-struct symtabs symtabs = {
-        .flags = SYMTAB_FL_DEMANGLE | SYMTAB_FL_ADJ_OFFSET,
-};
-
-void test_bp(struct opts *opts);
 
 int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
 {
@@ -586,73 +362,6 @@ int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
 	inject("libtrigger.so", target_pid);
         //abort();
 
-	//test_bp(opts);
-}
-
-void test_bp(struct opts *opts)
-{
-	pr_dbg("TEST BP\n");
-	int target_pid = opts->pid;
-	int index;
-	symtabs.dirname = opts->dirname;
-	load_symtabs(&symtabs, NULL, opts->exename);
-
-        struct timeval val;
-        gettimeofday(&val, NULL);
-        pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
-
-	struct symtab uftrace_symtab = symtabs.symtab;
-	// attach to target. pray all child thread have to work correctly.
-	debugger_init(target_pid);
-	int base_addr = 0x400000;
-	for(index=0;index < uftrace_symtab.nr_sym;index++) {
-		struct sym _sym = uftrace_symtab.sym[index];
-		pr_dbg2("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
-		
-		// at least, code size must larger than size of int. 
-		if (_sym.size > sizeof(4)) {
-			// set break point and save origin instruction. 
-			set_break_point(base_addr + _sym.addr);
-		}
-		
-	}
-
-        gettimeofday(&val, NULL);
-        pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
-
-	print_hashmap();
-	pr_dbg2("Continue");
-	// continue 
-	if(ptrace(PTRACE_CONT, target_pid, NULL, NULL)) {
-		pr_dbg("PTRACE CONTINUE FAILED");
-		exit(1);
-	}
-	// set a listener by using waitpid.`
-	int status;
-	waitpid(target_pid, &status, 0);
-	pr_dbg("SIGNAL %x", WTERMSIG(status));
-	if (WIFEXITED(status)) {
-		pr_dbg("PROCESS EXITED\n");
-	}
-	else if (WIFSIGNALED(status)) {
-		pr_dbg("SIGNAL %x\n", WTERMSIG(status));
-
-	}
-	else if (WIFSTOPPED(status)) {
-		pr_dbg("STOP %x\n", WTERMSIG(status));
-		// when reach here by SIGTRAP, we record it 
-		// by calling __fentry__.
-		gettimeofday(&val, NULL);
-		pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
-		remove_break_point();
-		gettimeofday(&val, NULL);
-		pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
-
-		// __fentry__();	
-		// restore origin and execute that.
-		
-		// set the break-point again. after that continue.
-	}
 }
 
 int find_exefile(struct opts *opts) {
