@@ -6,8 +6,6 @@
 #include <signal.h>
 #include <sys/time.h>
 
-
-
 __attribute__((constructor))
 void so_main() {
 	char* libname = "libmcount/libmcount-dynamic.so";

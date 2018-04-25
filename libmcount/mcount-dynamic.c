@@ -51,6 +51,9 @@ extern unsigned long plthook_resolver_addr;
 // 0 of pltgot_addr is replaced with record function. 
 extern unsigned long pltgot_addr;
 
+// to keeping address _start function.
+static unsigned long _start_addr = 0;
+
 // call relative address 
 // there is no instruction to jumping 64bit address directly.
 static unsigned char g_call_insn[] =  
@@ -83,10 +86,10 @@ void print_disassemble(uintptr_t address, uint32_t size)
 	cs_insn *insn;
 	int code_size = 0;
 	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
-	printf("DISASM:\n");
+	pr_dbg("DISASM:\n");
 	int j;
 	for(j = 0;j < count;j++) {
-		printf("0x%"PRIx64"[%02d]:%s %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
+		pr_dbg("0x%"PRIx64"[%02d]:%s %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
 	}
 	
 	cs_free(insn, count);	
@@ -104,7 +107,7 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 
 	// make instruction to patch. 	
 	for(i=0;i < 4;i++) {
-		printf("%02x\n", *(ptr+i));
+		pr_dbg2("%02x\n", *(ptr+i));
 		call_insn[2 + i] = *(ptr+i); // FF 15 XX XX XX XX 
 	}
 	print_string_hex("INSTRUMENT INSTRUCTION : ", call_insn, instruction_size);
@@ -120,10 +123,10 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	for(i=0;i < code_size;i++) {
 		save_addr[i] = code_addr[i];
 		if (i > instruction_size-1) {
-			printf("patching... : %x to %x \n", code_addr[i], 0x90);
+			pr_dbg2("patching... : %x to %x \n", code_addr[i], 0x90);
 			code_addr[i] = 0x90; 
 		} else {
-			printf("patching... : %x to %x \n", code_addr[i], call_insn[i]);
+			pr_dbg2("patching... : %x to %x \n", code_addr[i], call_insn[i]);
 			code_addr[i] = call_insn[i];	
 		}
 	}
@@ -137,7 +140,7 @@ puchar patch_code(uintptr_t addr, unsigned char* call_insn, unsigned int code_si
 	save_addr[code_size+5] = g_jmp_insn[5];
 
 	*((uintptr_t *)(&save_addr[code_size+6])) = &code_addr[code_size];
-	printf("RETURN ADDRESS : %llx\n", &code_addr[code_size]);
+	pr_dbg2("RETURN ADDRESS : %llx\n", &code_addr[code_size]);
 	
 	print_disassemble(save_addr, saved_code_size); 
 	print_disassemble(addr, code_size);
@@ -374,7 +377,7 @@ int do_dynamic_instrument(uintptr_t address, uint32_t insn_size)
 	saved_code = patch_code(address, &g_call_insn, insn_size);
 	if (saved_code) {
 		// TODO : keep and manage saved_code chunks.
-		pr_dbg("Keep original instruction : %llx\n", (uintptr_t)saved_code);
+		pr_dbg("Keep original instruction [%03d]: %llx\n", insn_size, (uintptr_t)saved_code);
 		el = malloc(sizeof(struct address_entry));
 		el->addr = address;
 		el->saved_addr = saved_code;
@@ -398,10 +401,10 @@ int dynamic_instrument(uintptr_t address, uint32_t size)
 	cs_insn *insn;
 	int code_size = 0;
 	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
-	printf("DISASM:\n");
+	pr_dbg2("DISASM:\n");
 	int j;
 	for(j = 0;j < count;j++) {
-		printf("0x%" PRIx64 "[%02d]: %s  %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
+		pr_dbg2("0x%" PRIx64 "[%02d]: %s  %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
 		int dynamicable = instruction_dynamicable(csh_handle, CS_MODE_64, &insn[j]);
 		if (dynamicable & NOT_USE_DYNAMIC) { 
 			pr_dbg("%d\n", dynamicable);
@@ -427,12 +430,12 @@ void read_memory(uintptr_t address, uint32_t size)
 	cs_insn *insn;
 	int code_size = 0;
 	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
-	printf("DISASM:\n");
+	pr_dbg2("DISASM:\n");
 	int j;
 	for(j = 0;j < count;j++) {
 		code_size += insn[j].size;
-		printf("0x%" PRIx64 ": %s  %s\n", insn[j].address, insn[j].mnemonic, insn[j].op_str);
-		printf("0x%" PRIx64 ": %d \n", insn[j].address, insn[j].size);
+		pr_dbg2("0x%" PRIx64 ": %s  %s\n", insn[j].address, insn[j].mnemonic, insn[j].op_str);
+		pr_dbg2("0x%" PRIx64 ": %d \n", insn[j].address, insn[j].size);
 		print_insn_detail(csh_handle, CS_MODE_64, &insn[j]);
 		int dynamicable = instruction_dynamicable(csh_handle, CS_MODE_64, &insn[j]);
 		if (dynamicable && NOT_USE_DYNAMIC) return -1; 
@@ -462,9 +465,9 @@ void disassemble(uintptr_t address, uint32_t size)
 	dynamic_instrument(address, size);
 	struct address_entry* entry;
 	
-	printf("=================================\n");
+	pr_dbg("=================================\n");
 	list_for_each_entry(entry, &address_list, list) {
-		printf("%lx %lx\n", entry->addr, entry->saved_addr);
+		pr_dbg("%lx %lx\n", entry->addr, entry->saved_addr);
 	}
 }
 
@@ -814,7 +817,7 @@ static void segv_handler(int sig, siginfo_t *si, void *ctx)
 
 out:
 	sigaction(sig, &old_sigact[(sig == SIGSEGV)], NULL);
-	raise(sig);
+	raise(SIGSTOP);
 }
 
 static void mcount_init_file(void)
@@ -1279,7 +1282,6 @@ int dynamic_entry(unsigned long *parent_loc, unsigned long child,
 	pr_dbg("dynamic_entry %lx, %lx, %lx\n", parent_loc, child, regs);
 	int result;
 	result = mcount_entry(parent_loc, child, regs);
-	
 	if (!result) {
 		/*
 		   dynamic_entry returns the address
@@ -1297,6 +1299,14 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
 	pr_dbg("mcount_entry %lx, %lx, %lx\n", parent_loc, child, regs);
+	pr_dbg("RDI : %lx\n", regs->rdi & 0xffffffff);
+	pr_dbg("RSI : %lx\n", regs->rsi);
+	pr_dbg("RDX : %lx\n", regs->rdx);
+	pr_dbg("RCX : %lx\n", regs->rcx);
+	pr_dbg("R8 : %lx\n", regs->r8);
+	pr_dbg("R9 : %lx\n", regs->r9);
+	
+
 	enum filter_result filtered;
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;
@@ -1893,7 +1903,6 @@ void __visible_default mcount_reset(void)
 	mcount_rstack_reset(mtdp);
 }
 
-/*
 void __visible_default __cyg_profile_func_enter(void *child, void *parent)
 {
 	cygprof_entry((unsigned long)parent, (unsigned long)child);
@@ -1905,7 +1914,6 @@ void __visible_default __cyg_profile_func_exit(void *child, void *parent)
 	cygprof_exit((unsigned long)parent, (unsigned long)child);
 }
 UFTRACE_ALIAS(__cyg_profile_func_exit);
-*/
 
 #ifndef UNIT_TEST
 
@@ -1927,14 +1935,14 @@ static void setup_environ_from_file() {
 	do {
 		if (!keyflag) {
 			value = token;
-			printf("value %s\n", token);
-			printf("value %s\n", value);
+			pr_dbg2("value %s\n", token);
+			pr_dbg2("value %s\n", value);
 			setenv(key, value, 1);
-			printf("setenv done\n");
+			pr_dbg2("setenv done\n");
 			keyflag = true;
 		} else {
 			key = token;
-			printf("key %s\n", key);
+			pr_dbg2("key %s\n", key);
 			keyflag = false;
 		}
 	} while(token = strtok(NULL, "=\n"));
@@ -1957,26 +1965,26 @@ void test_bp()
 
 	struct timeval val;
 	gettimeofday(&val, NULL);
-	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+	pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 
 	struct uftrace_mmap *map, *curr;
 	map = symtabs.maps;
-	printf("CHECK MMAP \n");
+	pr_dbg("CHECK MMAP \n");
 	while (map) {
 		curr = map;
 		map = map->next;
 		// check 	
 		if (curr->prot[2] == 'x') {
 			uint64_t size = curr->end - curr->start;
-			printf("0x%lx - 0x%lx\n", curr->start, curr->end);
-			printf("SIZE : 0x%lx\n", size);
+			pr_dbg("0x%lx - 0x%lx\n", curr->start, curr->end);
+			pr_dbg("SIZE : 0x%lx\n", size);
 			SETRWX(curr->start, size); 
 		}
 	}
 	struct symtab uftrace_symtab = symtabs.symtab;
 	// attach to target. pray all child thread have to work correctly.
 
-	printf("TARGET PID : %d\n", target_pid);
+	pr_dbg("TARGET PID : %d\n", target_pid);
 	// debugger_init(target_pid);
 	mprotect(0x400000, getpagesize(), PROT_READ | PROT_WRITE | PROT_EXEC);
 	int base_addr = 0x000000;
@@ -1985,8 +1993,12 @@ void test_bp()
 	disassembler_init();
 	for(index=0;index < uftrace_symtab.nr_sym;index++) {
 		struct sym _sym = uftrace_symtab.sym[index];
-		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
-
+		pr_dbg("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
+	
+		// exclude function.	
+		if (!strncmp(_sym.name, "_start", 6)) {
+			//continue;
+		}
 		
 		// at least, function need to bigger then call instruction. 
 		// TODO : conform with feature.
@@ -1998,7 +2010,7 @@ void test_bp()
 	}
 
 	gettimeofday(&val, NULL);
-	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+	pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 	pr_dbg("PLTHOOK : %lx\n", plthook_resolver_addr);
 	pr_dbg("PLTHOOK : %lx\n", pltgot_addr);
 	pr_dbg("Continue");

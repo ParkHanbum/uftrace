@@ -713,6 +713,15 @@ int dynamic_entry(unsigned long *parent_loc, unsigned long child,
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
+	pr_dbg("mcount_entry %lx, %lx, %lx\n", parent_loc, child, regs);
+	pr_dbg("RDI : %lx\n", regs->rdi & 0xffffffff);
+	pr_dbg("RSI : %lx\n", regs->rsi);
+	pr_dbg("RDX : %lx\n", regs->rdx);
+	pr_dbg("RCX : %lx\n", regs->rcx);
+	pr_dbg("R8 : %lx\n", regs->r8);
+	pr_dbg("R9 : %lx\n", regs->r9);
+
+
 	enum filter_result filtered;
 	struct mcount_thread_data *mtdp;
 	struct mcount_ret_stack *rstack;

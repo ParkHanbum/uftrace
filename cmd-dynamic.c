@@ -310,7 +310,6 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 	write_environ(env_fd, "TRACE_LIBRARY", buf);
 
 	// for DYNAMIC
-	printf("LOG setup environ\n");
 	snprintf(buf, sizeof(buf), "%d", getpid());
 	write_environ(env_fd, "UFTRACE_PID", buf);
 
@@ -558,9 +557,7 @@ static void read_record_mmap(int pfd, const char *dirname, int bufsize)
 
 void setup_uftrace_environ(struct opts *opts, int pfd)
 {
-	printf("setup start\n");
 	make_tmp_environ(opts, pfd);
-	printf("setup end\n");
 }
 
 
@@ -602,7 +599,7 @@ void test_bp(struct opts *opts)
 
         struct timeval val;
         gettimeofday(&val, NULL);
-        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+        pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 
 	struct symtab uftrace_symtab = symtabs.symtab;
 	// attach to target. pray all child thread have to work correctly.
@@ -610,7 +607,7 @@ void test_bp(struct opts *opts)
 	int base_addr = 0x400000;
 	for(index=0;index < uftrace_symtab.nr_sym;index++) {
 		struct sym _sym = uftrace_symtab.sym[index];
-		printf("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
+		pr_dbg2("[%d] %lx  %d :  %s\n", index, base_addr + _sym.addr, _sym.size, _sym.name);
 		
 		// at least, code size must larger than size of int. 
 		if (_sym.size > sizeof(4)) {
@@ -621,10 +618,10 @@ void test_bp(struct opts *opts)
 	}
 
         gettimeofday(&val, NULL);
-        printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+        pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 
 	print_hashmap();
-	pr_dbg("Continue");
+	pr_dbg2("Continue");
 	// continue 
 	if(ptrace(PTRACE_CONT, target_pid, NULL, NULL)) {
 		pr_dbg("PTRACE CONTINUE FAILED");
@@ -635,21 +632,21 @@ void test_bp(struct opts *opts)
 	waitpid(target_pid, &status, 0);
 	pr_dbg("SIGNAL %x", WTERMSIG(status));
 	if (WIFEXITED(status)) {
-		printf("PROCESS EXITED\n");
+		pr_dbg("PROCESS EXITED\n");
 	}
 	else if (WIFSIGNALED(status)) {
-		printf("SIGNAL %x\n", WTERMSIG(status));
+		pr_dbg("SIGNAL %x\n", WTERMSIG(status));
 
 	}
 	else if (WIFSTOPPED(status)) {
-		printf("STOP %x\n", WTERMSIG(status));
+		pr_dbg("STOP %x\n", WTERMSIG(status));
 		// when reach here by SIGTRAP, we record it 
 		// by calling __fentry__.
 		gettimeofday(&val, NULL);
-		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+		pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 		remove_break_point();
 		gettimeofday(&val, NULL);
-		printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
+		pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
 
 		// __fentry__();	
 		// restore origin and execute that.
@@ -699,6 +696,7 @@ int dynamic_child_exec(int pfd[2], int ready, struct opts *opts, char *argv[])
 	 * I don't think the traced binary is in PATH.
 	 * So use plain 'execv' rather than 'execvp'.
 	 */
+	pr_dbg("ARGV : %s\n", argv[opts->idx]);
 	execv(opts->exename, &argv[opts->idx]);
 	abort();
 }

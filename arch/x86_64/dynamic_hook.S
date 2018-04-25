@@ -64,7 +64,10 @@ GLOBAL(__dentry__)
 	cmpq $0, %rax
 	jz 1f
 
-	// return address will be replaced.
+	/*
+	return address will be replaced with	
+	saved original code chunk address.
+	*/
 	movq %rax, 48(%rsp)
 		
 	/* hijack return address */
