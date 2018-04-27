@@ -27,6 +27,7 @@
 #include "utils/filter.h"
 #include "utils/kernel.h"
 #include "utils/perf.h"
+#include "utils/compiler.h"
 
 #define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
@@ -72,7 +73,7 @@ static bool can_use_fast_libmcount(struct opts *opts)
 	return true;
 }
 
-static char *build_debug_domain_string(void)
+__visible_default char *build_debug_domain_string(void)
 {
 	int i, d;
 	static char domain[2*DBG_DOMAIN_MAX + 1];
@@ -340,7 +341,7 @@ static int fill_file_header(struct opts *opts, int status, struct rusage *rusage
 
 	if (read(efd, elf_ident, sizeof(elf_ident)) < 0)
 		goto close_efd;
-	pr_dbg("DEBUG#0_1\n");
+
 	strncpy(hdr.magic, UFTRACE_MAGIC_STR, UFTRACE_MAGIC_LEN);
 	hdr.version = UFTRACE_FILE_VERSION;
 	hdr.header_size = sizeof(hdr);
@@ -716,7 +717,6 @@ static void copy_to_buffer(struct mcount_shmem_buffer *shm, char *sess_id)
 	pthread_mutex_unlock(&write_list_lock);
 }
 
-__visible_default 
 static void record_mmap_file(const char *dirname, char *sess_id, int bufsize)
 {
 	int fd;
@@ -1472,7 +1472,7 @@ static void check_binary(struct opts *opts)
 	close(fd);
 }
 
-static bool check_linux_perf_event(char *events)
+__visible_default bool check_linux_perf_event(char *events)
 {
 	char *str, *tmp, *evt;
 	bool found = false;

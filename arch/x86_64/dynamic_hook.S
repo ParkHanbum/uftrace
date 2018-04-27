@@ -1,29 +1,3 @@
-/* argument passing: %rdi, %rsi, %rdx, %rcx, %r8, %r9 */
-/* return value: %rax */
-/* callee saved: %rbx, %rbp, %rsp, %r12-r15 */
-/* stack frame (with -pg -mfentry): parent addr = 8(%rsp), child addr = (%rsp) */
-/*
- * For example:
-
-   Parent(caller): main()
-   Child(callee): hello()
-
-   Dump of assembler code for function main:
-                   0x00000000004006bc <+0>:	callq  0x400550 <__fentry__@plt>
-                   0x00000000004006c1 <+5>:	push   %rbp
-                   0x00000000004006c2 <+6>:	mov    %rsp,%rbp
-                   0x00000000004006c5 <+9>:	mov    $0x0,%eax
-                   0x00000000004006ca <+14>:	callq  0x4006a6 <hello>
-    parent addr => 0x00000000004006cf <+19>:	nop
-                   0x00000000004006d0 <+20>:	pop    %rbp
-                   0x00000000004006d1 <+21>:	retq
-
-   Dump of assembler code for function hello:
-                   0x00000000004006a6 <+0>:	callq  0x400550 <__fentry__@plt>
-     child addr => 0x00000000004006ab <+5>:	push   %rbp
-                   0x00000000004006ac <+6>:	mov    %rsp,%rbp
- */
-
 #include "utils/asm.h"
 
 GLOBAL(__dentry__)

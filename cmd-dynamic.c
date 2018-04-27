@@ -32,75 +32,20 @@
 #include "utils/perf.h"
 #include "utils/debugger.h"
 
-#define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
-
-extern void record_mmap_file(const char *dirname, char *sess_id, int bufsize);
-extern void flush_old_shmem(const char *dirname, int tid, int bufsize);
-extern void add_tid_list(int pid, int tid);
-
-struct shmem_list {
-	struct list_head list;
-	char id[SHMEM_NAME_SIZE];
-};
-
-static LIST_HEAD(shmem_list_head);
-static LIST_HEAD(shmem_need_unlink);
-
-struct buf_list {
-	struct list_head list;
-	int tid;
-	void *shmem_buf;
-};
-
-static LIST_HEAD(buf_free_list);
-static LIST_HEAD(buf_write_list);
-
-/* currently active writers */
-static LIST_HEAD(writer_list);
-
-
 static bool has_perf_event;
 static char absolute_file_path[PATH_MAX];
 
-static bool check_linux_perf_event(char *events)
-{
-        char *str, *tmp, *evt;
-        bool found = false;
+extern bool check_linux_perf_event(char *events);
+extern char *build_debug_domain_string(void);
 
-        if (events == NULL)
-                return false;
+/*
+write a line to uftrace environment file with given argument fd.
+a line contain key-value pair with separator '='.
+like this, 
 
-        str = tmp = xstrdup(events);
-
-        evt = strtok(tmp, ";");
-        while (evt) {
-                if (fnmatch(evt, "linux:schedule", 0) == 0) {
-                        found = true;
-                        break;
-                }
-                evt = strtok(NULL, ";");
-        }
-
-        free(str);
-        return found;
-}
-
-static char *build_debug_domain_string(void)
-{
-        int i, d;
-        static char domain[2*DBG_DOMAIN_MAX + 1];
-
-        for (i = 0, d = 0; d < DBG_DOMAIN_MAX; d++) {
-                if (dbg_domain[d]) {
-                        domain[i++] = DBG_DOMAIN_STR[d];
-                        domain[i++] = dbg_domain[d] + '0';
-                }
-        }
-        domain[i] = '\0';
-
-        return domain;
-}
-
+[example]
+UFTRACE_PLTHOOK=1
+*/
 static void write_environ(int fd, char* key, char* value) 
 {
 	char buf[256];
@@ -110,7 +55,13 @@ static void write_environ(int fd, char* key, char* value)
 	write(fd, buf, strlen(buf)); 
 }
 
-static void make_tmp_environ(struct opts *opts, int pfd)
+/*
+Create a temporary file to save the environment variable for uftrace.
+
+in case for dynamic tracing to processes, we use file to passing 
+environment variable for uftrace because LD_PRELOAD not work.
+*/
+static void make_uftrace_environ_file(struct opts *opts, int pfd)
 {
 	char buf[4096];
 	char *old_preload, *old_libpath;
@@ -139,11 +90,14 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 		char *libpath = xmalloc(len);
 
 		snprintf(libpath, len, "%s:%s", buf, old_libpath);
+		write_environ(env_fd, "LD_LIBRARY_PATH", libpath);
 		setenv("LD_LIBRARY_PATH", libpath, 1);
 		free(libpath);
 	}
-	else
+	else {
+		write_environ(env_fd, "LD_LIBRARY_PATH", buf);
 		setenv("LD_LIBRARY_PATH", buf, 1);
+	}
 
 	if (opts->filter) {
 		char *filter_str = uftrace_clear_kernel(opts->filter);
@@ -175,9 +129,10 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 		}
 	}
 
-	if (opts->auto_args)
+	if (opts->auto_args) {
 		write_environ(env_fd, "UFTRACE_AUTO_ARGS", "1");
-		//setenv("UFTRACE_AUTO_ARGS", "1", 1);
+		setenv("UFTRACE_AUTO_ARGS", "1", 1);
+	}
 
 	if (opts->patch) {
 		char *patch_str = uftrace_clear_kernel(opts->patch);
@@ -251,49 +206,50 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 	}
 
 	snprintf(buf, sizeof(buf), "%d", pfd);
-	setenv("UFTRACE_PIPE", buf, 1);
 	write_environ(env_fd, "UFTRACE_PIPE", buf);
-	setenv("UFTRACE_SHMEM", "1", 1);
+	setenv("UFTRACE_PIPE", buf, 1);
 	write_environ(env_fd, "UFTRACE_SHMEM", "1");
+	setenv("UFTRACE_SHMEM", "1", 1);
 
 	if (debug) {
 		snprintf(buf, sizeof(buf), "%d", debug);
-		setenv("UFTRACE_DEBUG", buf, 1);
 		write_environ(env_fd, "UFTRACE_DEBUG", buf);
-		setenv("UFTRACE_DEBUG_DOMAIN", build_debug_domain_string(), 1);
+		setenv("UFTRACE_DEBUG", buf, 1);
 		write_environ(env_fd, "UFTRACE_DEBUG_DOMAIN", build_debug_domain_string());
+		setenv("UFTRACE_DEBUG_DOMAIN", build_debug_domain_string(), 1);
 	}
 
 	if(opts->disabled) {
-		setenv("UFTRACE_DISABLED", "1", 1);
 		write_environ(env_fd, "UFTRACE_DISABLED", "1");
+		setenv("UFTRACE_DISABLED", "1", 1);
 	}
 
 	if (log_color == COLOR_ON) {
 		snprintf(buf, sizeof(buf), "%d", log_color);
-		setenv("UFTRACE_COLOR", buf, 1);
 		write_environ(env_fd, "UFTRACE_COLOR", buf);
+		setenv("UFTRACE_COLOR", buf, 1);
 	}
 
 	snprintf(buf, sizeof(buf), "%d", demangler);
-	setenv("UFTRACE_DEMANGLE", buf, 1);
 	write_environ(env_fd, "UFTRACE_DEMANGLE", buf);
+	setenv("UFTRACE_DEMANGLE", buf, 1);
 
 	if ((opts->kernel || has_kernel_event(opts->event)) &&
 	    check_kernel_pid_filter()) {
-		setenv("UFTRACE_KERNEL_PID_UPDATE", "1", 1);
 		write_environ(env_fd, "UFTRACE_KERNEL_PID_UPDATE", "1");
+		setenv("UFTRACE_KERNEL_PID_UPDATE", "1", 1);
 	}
 
 	if (opts->script_file) {
-		setenv("UFTRACE_SCRIPT", opts->script_file, 1);
 		write_environ(env_fd, "UFTRACE_SCRIPT", opts->script_file);
+		setenv("UFTRACE_SCRIPT", opts->script_file, 1);
 	}
 
 	if (opts->lib_path)
 		snprintf(buf, sizeof(buf), "%s/libmcount/", opts->lib_path);
 	else
 		buf[0] = '\0';  /* to make strcat() work */
+
 	strcat(buf, "libmcount-dynamic.so");
 	pr_dbg("using %s library for tracing\n", buf);
 
@@ -303,47 +259,45 @@ static void make_tmp_environ(struct opts *opts, int pfd)
 		char *preload = xmalloc(len);
 
 		snprintf(preload, len, "%s:%s", buf, old_preload);
+		write_environ(env_fd, "LD_PRELOAD", preload);
 		setenv("LD_PRELOAD", preload, 1);
 		free(preload);
 	}
-	else
+	else {
+		write_environ(env_fd, "LD_PRELOAD", buf);
 		setenv("LD_PRELOAD", buf, 1);
-	write_environ(env_fd, "TRACE_LIBRARY", buf);
+	}
 
-	// for DYNAMIC
+	// The process ID to inject the shared object.
 	snprintf(buf, sizeof(buf), "%d", getpid());
 	write_environ(env_fd, "UFTRACE_PID", buf);
 
 	// The below code should be placed at the end.	
-	setenv("XRAY_OPTIONS", "patch_premain=false", 1);
 	write_environ(env_fd, "XRAY_OPTIONS", "patch_premain=false");
+	setenv("XRAY_OPTIONS", "patch_premain=false", 1);
 }
 
-
-static int shmem_lost_count;
-
-struct tid_list {
-	struct list_head list;
-	int pid;
-	int tid;
-	bool exited;
-};
-
-static LIST_HEAD(tid_list_head);
-
-struct dlopen_list {
-        struct list_head list;
-        char *libname;
-};
-
-static LIST_HEAD(dlopen_libs);
-
-
+// settings for using dynamic tracing feature. 
 void setup_uftrace_environ(struct opts *opts, int pfd)
 {
-	make_tmp_environ(opts, pfd);
+	make_uftrace_environ_file(opts, pfd);
 }
 
+/*
+inject the shared object 'libtrigger.so' to processes. 
+
+inject libtrigger.so using '__libc_dlopen_mode' which export 
+from 'libc.so'. This is because libc.so is always loaded. 
+Another option is to use 'dlopen' which exported from libdl.so, 
+but 'libdl.so' will not always load. 
+
+we must  have to load 'libmcount-dynamic.so' but '__libc_dlopen_mode' 
+will failed to load it. maybe there is some complex issue. 
+
+therefore, we inject 'libtrigger.so' to the process first. 
+after it loaded, it will load 'libmcount-dynamic.so' continuly
+with using 'dlopen'.
+*/
 int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
 {
 	int target_pid = opts->pid;
@@ -354,16 +308,13 @@ int do_inject(int pfd[2], int ready, struct opts *opts, char *argv[])
         if (read(ready, &dummy, sizeof(dummy)) != (ssize_t)sizeof(dummy))
                 pr_err("waiting for parent failed");
 
-	// TODO : do inject libmcount-dynamic.so to specific process
-	pr_dbg("ENVIRONMENT READY. NOw INJECTING...\n");	
-
-	// to easier test.
-	//execv("./dlopen", &argv[opts->idx]);
 	inject("libtrigger.so", target_pid);
-        //abort();
-
 }
 
+/*
+find the executable file for the process you want to inject.
+Local symbol informations are required to use dynamic tracing.
+*/
 int find_exefile(struct opts *opts) {
 	DIR *directory = opendir("/proc/");
 	char* exePath;
@@ -405,9 +356,86 @@ int dynamic_child_exec(int pfd[2], int ready, struct opts *opts, char *argv[])
 	 * I don't think the traced binary is in PATH.
 	 * So use plain 'execv' rather than 'execvp'.
 	 */
-	pr_dbg("ARGV : %s\n", argv[opts->idx]);
 	execv(opts->exename, &argv[opts->idx]);
 	abort();
+}
+
+#define UFTRACE_MSG  "Cannot trace '%s': No such executable file\n"	\
+"\tNote that uftrace doesn't search $PATH for you.\n"			\
+"\tIf you really want to trace executables in the $PATH,\n"		\
+"\tplease give it the absolute pathname (like /usr/bin/%s).\n"
+
+#define UFTRACE_ELF_MSG  "Cannot trace '%s': Invalid file\n"		\
+"\tThis file doesn't look like an executable ELF file.\n"		\
+"\tPlease check whether it's a kind of script or shell functions.\n"
+
+#define MACHINE_MSG  "Cannot trace '%s': Unsupported machine\n"		\
+"\tThis machine type (%u) is not supported currently.\n"		\
+"\tSorry about that!\n"
+
+#define STATIC_MSG  "Cannot trace static binary: %s\n"			\
+"\tIt seems to be compiled with -static, rebuild the binary without it.\n"
+
+#ifndef  EM_AARCH64
+# define EM_AARCH64  183
+#endif
+
+static void check_binary_dynamic_avilable(struct opts *opts)
+{
+	int fd;
+	int chk;
+	size_t i;
+	char elf_ident[EI_NIDENT];
+	uint16_t e_type;
+	uint16_t e_machine;
+	uint16_t supported_machines[] = {
+		EM_X86_64, EM_ARM, EM_AARCH64, EM_386
+	};
+
+	pr_dbg3("checking binary %s\n", opts->exename);
+
+	if (access(opts->exename, X_OK) < 0) {
+		if (errno == ENOENT && opts->exename[0] != '/') {
+			pr_err_ns(UFTRACE_MSG, opts->exename, opts->exename);
+		}
+		pr_err("Cannot trace '%s'", opts->exename);
+	}
+
+	fd = open(opts->exename, O_RDONLY);
+	if (fd < 0)
+		pr_err("Cannot open '%s'", opts->exename);
+
+	if (read(fd, elf_ident, sizeof(elf_ident)) < 0)
+		pr_err("Cannot read '%s'", opts->exename);
+
+	if (memcmp(elf_ident, ELFMAG, SELFMAG))
+		pr_err_ns(UFTRACE_ELF_MSG, opts->exename);
+
+	if (read(fd, &e_type, sizeof(e_type)) < 0)
+		pr_err("Cannot read '%s'", opts->exename);
+
+	if (e_type != ET_EXEC && e_type != ET_DYN)
+		pr_err_ns(UFTRACE_ELF_MSG, opts->exename);
+
+	if (read(fd, &e_machine, sizeof(e_machine)) < 0)
+		pr_err("Cannot read '%s'", opts->exename);
+
+	for (i = 0; i < ARRAY_SIZE(supported_machines); i++) {
+		if (e_machine == supported_machines[i])
+			break;
+	}
+	if (i == ARRAY_SIZE(supported_machines))
+		pr_err_ns(MACHINE_MSG, opts->exename, e_machine);
+
+	chk = check_static_binary(opts->exename);
+	if (chk) {
+		if (chk < 0)
+			pr_err_ns("Cannot check '%s'\n", opts->exename);
+		else
+			pr_err_ns(STATIC_MSG, opts->exename);
+	}
+
+	close(fd);
 }
 
 #define DYNAMIC_TO_PROCESS 0
@@ -432,9 +460,9 @@ int command_dynamic(int argc, char *argv[], struct opts *opts)
 		parse_script_opt(opts);
 
 
-	/************
+	/*******************
 	* dynamic stub start
-	*************/
+	********************/
 	if (!opts->pid) {
 		pr_dbg("Dynamic Trace to Program\n");
 		flag = DYNAMIC_TO_PROGRAM;
@@ -447,10 +475,13 @@ int command_dynamic(int argc, char *argv[], struct opts *opts)
 	}
 	
 	pr_dbg("FIND EXECUTABLE FILE PATH : %s\n", opts->exename);
-	
+
+	// Check the binary to ensure that 
+	// dynamic tracing is available.	
+	check_binary_dynamic_avilable(opts);
 
 	// dynamic stub END
-
+	
 	has_perf_event = check_linux_perf_event(opts->event);
 
 	fflush(stdout);

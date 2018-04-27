@@ -6,8 +6,12 @@
 #include <signal.h>
 #include <sys/time.h>
 
+char* library_path;
+
 __attribute__((constructor))
 void so_main() {
+	library_path = getenv("LD_LIBRARY_PATH");
+	printf("LIBRARY PATH : %s\n", library_path);
 	char* libname = "libmcount/libmcount-dynamic.so";
 	char path[128] = {0, };
 	char* current_path = getcwd(path, sizeof(path));	

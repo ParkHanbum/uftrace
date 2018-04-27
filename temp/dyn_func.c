@@ -12,14 +12,24 @@ struct timespec* sleeptime;
 int count = 0;
 
 void _func1() {
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 void _func2() {
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 void _func3() {
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 void _func4() {
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 void _func5() {
+	gettimeofday(&val, NULL);
+	printf("%ld:%ld\n", val.tv_sec, val.tv_usec);
 }
 void _func6() {
 	nanosleep(sleeptime, NULL);
@@ -40,6 +50,11 @@ void sleepfunc()
 	while(1)
 	{
 		printf("sleeping...%d \n", pid);
+		_func1();
+		_func2();
+		_func3();
+		_func4();
+		_func5();
 		_func6();
 		if (count > 11) break;
 		count++;
