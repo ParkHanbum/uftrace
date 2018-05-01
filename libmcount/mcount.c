@@ -804,6 +804,14 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 }
 #endif
 
+// TODO : follow function is no need for libmcount.
+__weak
+int dynamic_entry(unsigned long *parent_loc, unsigned long child, 
+		 struct mcount_regs *regs)
+{
+	return 0;
+}
+
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
@@ -1417,13 +1425,26 @@ void __visible_default __cyg_profile_func_exit(void *child, void *parent)
 UFTRACE_ALIAS(__cyg_profile_func_exit);
 
 #ifndef UNIT_TEST
+
+__weak void pre_startup()
+{
+	// do something pre "mcount_startup" here.
+}
+
+__weak void post_startup()
+{
+	// do something post "mcount_startup" here.
+}
+
 /*
  * Initializer and Finalizer
  */
 static void __attribute__((constructor))
 mcount_init(void)
 {
+	pre_startup();
 	mcount_startup();
+	post_startup();
 }
 
 static void __attribute__((destructor))

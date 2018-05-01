@@ -25,6 +25,8 @@
 /* global symbol tables for libmcount */
 extern struct symtabs symtabs;
 
+unsigned long pltgot_addr;
+
 /* address of dynamic linker's resolver routine (copied from GOT[2]) */
 unsigned long plthook_resolver_addr;
 
@@ -106,6 +108,7 @@ static void restore_plt_functions(struct plthook_data *pd)
 	struct symtab *dsymtab = &pd->dsymtab;
 
 	for (i = 0; i < dsymtab->nr_sym; i++) {
+		pr_dbg2("=========================================\n");
 		bool skipped = false;
 		unsigned long plthook_addr;
 		unsigned long resolved_addr;
@@ -154,16 +157,21 @@ static void restore_plt_functions(struct plthook_data *pd)
 
 		resolved_addr = pd->pltgot_ptr[3 + i];
 		plthook_addr = mcount_arch_plthook_addr(pd, i);
+		pr_dbg2("overwrite resolved addr %p to plthook_addr %p\n",
+			resolved_addr, plthook_addr);
 		if (resolved_addr != plthook_addr) {
 			/* save already resolved address and hook it */
 			pd->resolved_addr[i] = resolved_addr;
+			pr_dbg2("origin : %p\n", pd->pltgot_ptr[i+3]);
 			overwrite_pltgot(pd, 3 + i, (void *)plthook_addr);
 			pr_dbg2("restore [%u] %s: %p (PLT: %#lx)\n",
 				i, dsymtab->sym[i].name, resolved_addr, plthook_addr);
 		}
+		pr_dbg2("=========================================\n");
 	}
 }
 
+extern void __weak __dentry__(void);
 extern void __weak plt_hooker(void);
 extern unsigned long plthook_return(void);
 
@@ -178,7 +186,7 @@ static int find_got(Elf *elf, const char *modname,
 	size_t i;
 	bool plt_found = false;
 	bool bind_now = false;
-	unsigned long pltgot_addr = 0;
+	//unsigned long pltgot_addr = 0;
 	struct plthook_data *pd;
 	Elf_Scn *sec = NULL;
 	size_t shstr_idx;
@@ -259,8 +267,12 @@ static int find_got(Elf *elf, const char *modname,
 		restore_plt_functions(pd);
 	}
 
+	pr_dbg("hook the plt-resolver to uftrace\n");
+	pr_dbg2("overwt : [%u] %p\t %p\n", 2, pd->pltgot_ptr[2], plt_hooker);
 	overwrite_pltgot(pd, 2, plt_hooker);
 
+	pr_dbg("OVERWRITING GOT[0]... \n"); 
+	overwrite_pltgot(pd, 0, __dentry__);
 	if (bind_now) {
 		mcount_arch_undo_bindnow(elf, pd);
 

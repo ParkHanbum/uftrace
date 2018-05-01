@@ -860,7 +860,7 @@ void record_proc_maps(char *dirname, const char *sess_id,
 
 	ofp = fopen(buf, "w");
 	if (ofp == NULL)
-		pr_err("cannot open for writing maps file");
+		pr_err("cannot open for writing maps file %s", buf);
 
 	while (fgets(buf, sizeof(buf), ifp)) {
 		unsigned long start, end;

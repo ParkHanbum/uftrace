@@ -1,12 +1,13 @@
 TEST_CFLAGS  := -D_GNU_SOURCE -DUNIT_TEST -I$(srcdir) -I$(objdir) -I$(srcdir)/arch/$(ARCH) -g
 TEST_CFLAGS  += -include $(srcdir)/tests/unittest.h
-TEST_LDFLAGS := -L$(objdir)/libtraceevent -ltraceevent -lelf -pthread -lrt -ldl
+TEST_LDFLAGS := -L$(objdir)/libtraceevent -ltraceevent -lelf -pthread -lrt -ldl -lcapstone
 
 UNIT_TEST_SRC := $(wildcard $(srcdir)/*.c $(srcdir)/utils/*.c)
 UNIT_TEST_SRC += $(wildcard $(srcdir)/arch/$(ARCH)/*.c)
 UNIT_TEST_SRC += $(wildcard $(srcdir)/libmcount/*.c)
 UNIT_TEST_OBJ := $(patsubst %.c,%.ot,$(UNIT_TEST_SRC))
 UNIT_TEST_OBJ := $(filter-out %-nop.ot,$(UNIT_TEST_OBJ))
+UNIT_TEST_OBJ := $(filter-out %trigger.ot,$(UNIT_TEST_OBJ))
 
 include $(srcdir)/Makefile.include
 

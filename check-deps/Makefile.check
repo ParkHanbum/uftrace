@@ -35,3 +35,6 @@ ifneq ($(wildcard $(srcdir)/check-deps/have_libncurses),)
   COMMON_CFLAGS += -DHAVE_LIBNCURSES $(shell pkg-config --cflags ncursesw)
   UFTRACE_LDFLAGS += $(shell pkg-config --libs ncursesw)
 endif
+ifneq ($(wildcard $(srcdir)/check-deps/have_libcapstone),)
+  export HAVE_LIB_CAPSTONE = 1
+endif
