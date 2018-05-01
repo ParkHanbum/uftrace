@@ -696,7 +696,6 @@ void record_proc_maps(char *dirname, const char *sess_id,
 		pr_err("cannot open proc maps file");
 
 	snprintf(buf, sizeof(buf), "%s/sid-%s.map", dirname, sess_id);
-	printf("%s\n", buf);
 	
 	ofp = fopen(buf, "w");
 	if (ofp == NULL)

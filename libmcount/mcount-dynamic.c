@@ -171,12 +171,12 @@ static void print_string_hex(char *comment, unsigned char *str, size_t len)
 {
 	unsigned char *c;
 
-	pr_dbg("%s", comment);
+	pr_gray("%s", comment);
 	for (c = str; c < str + len; c++) {
-		pr_dbg("0x%02x ", *c & 0xff);
+		pr_gray("0x%02x ", *c & 0xff);
 	}
 
-	pr_dbg("\n");
+	pr_gray("\n");
 }
 
 void print_disassemble(uintptr_t address, uint32_t size) 
@@ -184,7 +184,7 @@ void print_disassemble(uintptr_t address, uint32_t size)
 	cs_insn *insn;
 	int code_size = 0;
 	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
-	pr_dbg("DISASM:\n");
+	pr_dbg("============  DISASM ================\n");
 	int j;
 	for(j = 0;j < count;j++) {
 		pr_dbg("0x%"PRIx64"[%02d]:%s %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
@@ -350,7 +350,6 @@ save original instructions to allocated heap space.
 */
 int dynamic_instrument(uintptr_t address, uint32_t insn_size) 
 {
-	pr_dbg("Do dynamic instrument\n");
 	struct address_entry* el;
 	puchar saved_code;
 	saved_code = patch_code(address, &g_call_insn, insn_size);
@@ -398,7 +397,7 @@ int instrument(uintptr_t address, uint32_t size)
 	cs_insn *insn;
 	int code_size = 0;
 	int count = cs_disasm(csh_handle, (unsigned char*)address, size, address, 0, &insn);
-	pr_dbg2("DISASM:\n");
+	pr_dbg2("========== DISASM ============\n");
 	int j;
 	for(j = 0;j < count;j++) {
 		pr_dbg2("0x%" PRIx64 "[%02d]: %s  %s\n", insn[j].address, insn[j].size, insn[j].mnemonic, insn[j].op_str);
@@ -417,16 +416,6 @@ int instrument(uintptr_t address, uint32_t size)
 	
 	dynamic_instrument(address, code_size);
 	
-	
-	// prints "original code address : saved address" pair.
-	struct address_entry* entry;
-	if (debug) {
-		pr_dbg("=================================\n");
-		list_for_each_entry(entry, &address_list, list) {
-			pr_dbg("%lx : %lx\n", entry->addr, entry->saved_addr);
-		}
-	}
-
 	cs_free(insn, count);	
 	return INSTRUMENT_SUCCESS; 
 }
@@ -595,6 +584,25 @@ void enable_dynamic_trace()
 	set_write_perm_to_text();
 	// enable dynamic tracing to each function.
 	enable_dynamic_trace_each_function();
+
+	
+	// prints "original code address : saved address" pair.
+	struct address_entry* entry;
+	int index;
+	if (debug) {
+		pr_green("========= [INSTRUMENTED FUNCTIONS] ==========\n");
+		list_for_each_entry(entry, &address_list, list) {
+			struct symtab uftrace_symtab = symtabs.symtab;
+			// do dynamic instrumentation to each function.
+			for(index=0;index < uftrace_symtab.nr_sym;index++) {
+				struct sym _sym = uftrace_symtab.sym[index];
+				if (_sym.addr == entry->addr) {
+					pr_green("[%60s] %09lx : %09lx\n", _sym.name, entry->addr, entry->saved_addr);
+				}
+			}
+		}
+	}
+
 
 	gettimeofday(&val, NULL);
 	pr_dbg2("%ld:%ld\n", val.tv_sec, val.tv_usec);
