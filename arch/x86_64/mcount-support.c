@@ -7,6 +7,7 @@
 #define PR_FMT     "mcount"
 #define PR_DOMAIN  DBG_MCOUNT
 
+#include "mcount-cpu.h"
 #include "libmcount/internal.h"
 #include "utils/filter.h"
 

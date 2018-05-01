@@ -103,13 +103,18 @@ include $(srcdir)/Makefile.include
 
 LIBMCOUNT_TARGETS := libmcount/libmcount.so libmcount/libmcount-fast.so
 LIBMCOUNT_TARGETS += libmcount/libmcount-single.so libmcount/libmcount-fast-single.so
+ifdef HAVE_LIB_CAPSTONE
+LIBMCOUNT_TARGETS += libmcount/libmcount-dynamic.so
+LIBMCOUNT_TARGETS += libmcount/libtrigger.so
+endif
 
 _TARGETS := uftrace libtraceevent/libtraceevent.a
 _TARGETS += $(LIBMCOUNT_TARGETS) libmcount/libmcount-nop.so
 _TARGETS += misc/demangler
 TARGETS  := $(patsubst %,$(objdir)/%,$(_TARGETS))
 
-UFTRACE_SRCS := $(srcdir)/uftrace.c $(wildcard $(srcdir)/cmd-*.c $(srcdir)/utils/*.c)
+UFTRACE_SRCS := $(srcdir)/uftrace.c 
+UFTRACE_SRCS += $(filter-out $(srcdir)/cmd-dynamic.c,$(wildcard $(srcdir)/cmd-*.c $(srcdir)/utils/*.c))
 UFTRACE_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.o,$(UFTRACE_SRCS))
 
 DEMANGLER_SRCS := $(srcdir)/misc/demangler.c $(srcdir)/utils/demangle.c $(srcdir)/utils/debug.c
@@ -120,7 +125,7 @@ UFTRACE_ARCH_OBJS := $(objdir)/arch/$(ARCH)/uftrace.o
 UFTRACE_HDRS := $(filter-out $(srcdir)/version.h,$(wildcard $(srcdir)/*.h $(srcdir)/utils/*.h))
 UFTRACE_HDRS += $(srcdir)/libmcount/mcount.h $(wildcard $(srcdir)/arch/$(ARCH)/*.h)
 
-LIBMCOUNT_SRCS := $(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c))
+LIBMCOUNT_SRCS := $(filter-out %trigger.c,$(filter-out %-dynamic.c,$(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c))))
 LIBMCOUNT_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_SRCS))
 LIBMCOUNT_FAST_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-fast.op,$(LIBMCOUNT_OBJS))
 LIBMCOUNT_SINGLE_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-single.op,$(LIBMCOUNT_OBJS))
@@ -130,13 +135,27 @@ LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/symbol.c $(srcdir)/utils/debug.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/rbtree.c $(srcdir)/utils/filter.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/demangle.c $(srcdir)/utils/utils.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/script.c $(srcdir)/utils/script-python.c
-LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/auto-args.c
+LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/auto-args.c $(srcdir)/utils/env-file.c
 LIBMCOUNT_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_UTILS_SRCS))
 
 LIBMCOUNT_NOP_SRCS := $(srcdir)/libmcount/mcount-nop.c
 LIBMCOUNT_NOP_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_NOP_SRCS))
 
 LIBMCOUNT_ARCH_OBJS := $(objdir)/arch/$(ARCH)/mcount-entry.op
+
+# without dynamic tracing feature. 
+ifdef HAVE_LIB_CAPSTONE
+UFTRACE_SRCS += $(srcdir)/cmd-dynamic.c
+UFTRACE_OBJS += $(srcdir)/cmd-dynamic.o
+
+_LIBMCOUNT_SRCS := $(filter-out %trigger.c,$(filter-out %mcount.c,$(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c))))
+_LIBMCOUNT_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(_LIBMCOUNT_SRCS))
+
+TRIGGER_SRCS := $(srcdir)/libmcount/trigger.c
+TRIGGER_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(TRIGGER_SRCS))
+
+LIBMCOUNT_DYNAMIC_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-dynamic.op,$(_LIBMCOUNT_OBJS))
+endif 
 
 COMMON_DEPS := $(objdir)/.config $(UFTRACE_HDRS)
 LIBMCOUNT_DEPS := $(COMMON_DEPS) $(srcdir)/libmcount/internal.h
@@ -200,6 +219,21 @@ $(objdir)/libmcount/libmcount-fast-single.so: $(LIBMCOUNT_FAST_SINGLE_OBJS) $(LI
 
 $(objdir)/libmcount/libmcount-nop.so: $(LIBMCOUNT_NOP_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
+
+ifdef HAVE_LIB_CAPSTONE
+$(LIBMCOUNT_DYNAMIC_OBJS): $(objdir)/%-dynamic.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
+	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $< 
+
+$(TRIGGER_OBJS): $(objdir)/%.op: $(srcdir)/%.c 
+	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
+
+$(objdir)/libmcount/libmcount-dynamic.so: $(objdir)/libmcount/mcount.op $(LIBMCOUNT_DYNAMIC_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
+	$(QUIET_LINK)$(CC) -shared -o $@ $^ -lcapstone $(LIB_LDFLAGS)
+
+$(objdir)/libmcount/libtrigger.so: $(TRIGGER_OBJS) $(objdir)/libmcount/env-file.op $(objdir)/libmcount/debug.op 
+	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
+endif
+
 
 $(LIBMCOUNT_ARCH_OBJS): $(wildcard $(srcdir)/arch/$(ARCH)/*.[cS]) $(LIBMCOUNT_DEPS)
 	@$(MAKE) -B -C $(srcdir)/arch/$(ARCH) $@

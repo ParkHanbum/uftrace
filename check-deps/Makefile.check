@@ -30,3 +30,7 @@ endif
 ifneq ($(wildcard $(srcdir)/check-deps/arm_has_hardfp),)
   COMMON_CFLAGS += -DHAVE_ARM_HARDFP
 endif
+
+ifneq ($(wildcard $(srcdir)/check-deps/have_libcapstone),)
+  export HAVE_LIB_CAPSTONE = 1
+endif

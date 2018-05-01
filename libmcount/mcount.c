@@ -803,6 +803,14 @@ mcount_arch_parent_location(struct symtabs *symtabs, unsigned long *parent_loc,
 }
 #endif
 
+// TODO : follow function is no need for libmcount.
+__weak
+int dynamic_entry(unsigned long *parent_loc, unsigned long child, 
+		 struct mcount_regs *regs)
+{
+	return 0;
+}
+
 int mcount_entry(unsigned long *parent_loc, unsigned long child,
 		 struct mcount_regs *regs)
 {
@@ -815,17 +823,25 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 	mtdp = get_thread_data();
 	if (unlikely(check_thread_data(mtdp))) {
 		mtdp = mcount_prepare();
-		if (mtdp == NULL)
+		if (mtdp == NULL) {
+			pr_dbg("MTDP has NULL! \n");
 			return -1;
+		}
 	}
 	else {
-		if (!mcount_guard_recursion(mtdp, false))
+		if (!mcount_guard_recursion(mtdp, false)) {
+			pr_dbg("Guard recursion! \n");
+
+			// make crash for debugging
+			int a = *(intptr_t *)0;
 			return -1;
+		}
 	}
 
 	tr.flags = 0;
 	filtered = mcount_entry_filter_check(mtdp, child, &tr);
 	if (filtered != FILTER_IN) {
+		pr_dbg("Filtered!! \n");
 		mcount_unguard_recursion(mtdp);
 		return -1;
 	}
@@ -1398,13 +1414,26 @@ void __visible_default __cyg_profile_func_exit(void *child, void *parent)
 UFTRACE_ALIAS(__cyg_profile_func_exit);
 
 #ifndef UNIT_TEST
+
+__weak void pre_startup()
+{
+	// do something pre "mcount_startup" here.
+}
+
+__weak void post_startup()
+{
+	// do something post "mcount_startup" here.
+}
+
 /*
  * Initializer and Finalizer
  */
 static void __attribute__((constructor))
 mcount_init(void)
 {
+	pre_startup();
 	mcount_startup();
+	post_startup();
 }
 
 static void __attribute__((destructor))
