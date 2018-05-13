@@ -97,6 +97,8 @@ enum options {
 	OPT_libname,
 	OPT_match_type,
 	OPT_no_randomize_addr,
+	OPT_dynamic,
+	OPT_pid,
 };
 
 static struct argp_option uftrace_options[] = {
@@ -123,6 +125,7 @@ static struct argp_option uftrace_options[] = {
 	{ "kernel", 'k', 0, 0, "Trace kernel functions also (if supported)" },
 	{ "host", 'H', "HOST", 0, "Send trace data to HOST instead of write to file" },
 	{ "port", OPT_port, "PORT", 0, "Use PORT for network connection (default: 8090)" },
+	{ "pid", OPT_pid, "PID", 0, "PID to dynamic trace" },
 	{ "no-pager", OPT_nopager, 0, 0, "Do not use pager" },
 	{ "sort", 's', "KEY[,KEY,...]", 0, "Sort reported functions by KEYs (default: total)" },
 	{ "avg-total", OPT_avg_total, 0, 0, "Show average/min/max of total function time" },
@@ -550,6 +553,12 @@ static error_t parse_option(int key, char *arg, struct argp_state *state)
 		}
 		break;
 
+	case OPT_pid:
+		opts->pid = strtol(arg, NULL, 0);
+		if (opts->pid <= 0)
+			pr_use("invalid pid number: %s (ignoring..)\n", arg);
+		break;
+
 	case OPT_nopager:
 		opts->use_pager = false;
 		break;
@@ -765,6 +774,8 @@ static error_t parse_option(int key, char *arg, struct argp_state *state)
 			opts->mode = UFTRACE_MODE_SCRIPT;
 		else if (!strcmp("tui", arg))
 			opts->mode = UFTRACE_MODE_TUI;
+		else if (!strcmp("dynamic", arg))
+			opts->mode = UFTRACE_MODE_DYNAMIC;
 		else
 			return ARGP_ERR_UNKNOWN; /* almost same as fall through */
 		break;
@@ -959,6 +970,7 @@ int main(int argc, char *argv[])
 		.depth		= OPT_DEPTH_DEFAULT,
 		.max_stack	= OPT_RSTACK_DEFAULT,
 		.port		= UFTRACE_RECV_PORT,
+		.pid		= 0,
 		.use_pager	= true,
 		.color		= COLOR_AUTO,  /* default to 'auto' (turn on if terminal) */
 		.column_offset	= 8,
@@ -1063,6 +1075,9 @@ int main(int argc, char *argv[])
 		break;
 	case UFTRACE_MODE_TUI:
 		ret = command_tui(argc, argv, &opts);
+		break;
+	case UFTRACE_MODE_DYNAMIC:
+		ret = command_dynamic(argc, argv, &opts);
 		break;
 	case UFTRACE_MODE_INVALID:
 		ret = 1;
