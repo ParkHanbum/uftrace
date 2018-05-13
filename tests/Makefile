@@ -7,6 +7,8 @@ UNIT_TEST_SRC += $(wildcard $(srcdir)/arch/$(ARCH)/*.c)
 UNIT_TEST_SRC += $(wildcard $(srcdir)/libmcount/*.c)
 UNIT_TEST_OBJ := $(patsubst %.c,%.ot,$(UNIT_TEST_SRC))
 UNIT_TEST_OBJ := $(filter-out %-nop.ot,$(UNIT_TEST_OBJ))
+UNIT_TEST_SRC_ASM := $(srcdir)/arch/$(ARCH)/inject-content.S
+UNIT_TEST_ASM_OBJ := $(srcdir)/arch/$(ARCH)/inject-content.ot
 
 include $(srcdir)/Makefile.include
 
@@ -18,11 +20,14 @@ test_run:
 test_unit: unittest
 	./unittest $(TESTARG)
 
-unittest: unittest.c unittest.h $(UNIT_TEST_OBJ)
-	$(QUIET_LINK)$(CC) -o $@ $(TEST_CFLAGS) $< $(UNIT_TEST_OBJ) $(TEST_LDFLAGS)
+unittest: unittest.c unittest.h $(UNIT_TEST_OBJ) $(UNIT_TEST_ASM_OBJ)
+	$(QUIET_LINK)$(CC) -o $@ $(TEST_CFLAGS) $< $(UNIT_TEST_OBJ) $(UNIT_TEST_ASM_OBJ) $(TEST_LDFLAGS)
 
 $(UNIT_TEST_OBJ): %.ot: %.c $(srcdir)/version.h
 	$(QUIET_CC)$(CC) -o $@ -c $(TEST_CFLAGS) $<
+
+$(UNIT_TEST_ASM_OBJ): $(UNIT_TEST_SRC_ASM)
+	$(QUIET_ASM)$(CC) $(LIB_CFLAGS) -c -o $@ $<
 
 clean:
 	$(call QUIET_CLEAN, test)
