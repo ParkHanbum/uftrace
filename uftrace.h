@@ -187,6 +187,7 @@ bool data_is_lp64(struct uftrace_data *handle);
 #define UFTRACE_MODE_GRAPH   8
 #define UFTRACE_MODE_SCRIPT  9
 #define UFTRACE_MODE_TUI     10
+#define UFTRACE_MODE_DYNAMIC 11
 
 #define UFTRACE_MODE_DEFAULT  UFTRACE_MODE_LIVE
 
@@ -219,6 +220,7 @@ struct opts {
 	int kernel_depth;
 	int max_stack;
 	int port;
+	int pid;
 	int color;
 	int column_offset;
 	int sort_column;
@@ -284,6 +286,7 @@ int command_dump(int argc, char *argv[], struct opts *opts);
 int command_graph(int argc, char *argv[], struct opts *opts);
 int command_script(int argc, char *argv[], struct opts *opts);
 int command_tui(int argc, char *argv[], struct opts *opts);
+int command_dynamic(int argc, char *argv[], struct opts *opts);
 
 extern volatile bool uftrace_done;
 

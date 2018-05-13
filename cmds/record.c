@@ -75,7 +75,7 @@ static bool can_use_fast_libmcount(struct opts *opts)
 	return true;
 }
 
-static char *build_debug_domain_string(void)
+char *build_debug_domain_string(void)
 {
 	int i, d;
 	static char domain[2*DBG_DOMAIN_MAX + 1];
@@ -1554,7 +1554,7 @@ again:
 	close(fd);
 }
 
-static void check_perf_event(struct opts *opts)
+void check_perf_event(struct opts *opts)
 {
 	struct strv strv = STRV_INIT;
 	char *evt;
