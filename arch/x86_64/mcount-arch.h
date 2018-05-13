@@ -49,4 +49,47 @@ int disasm_check_insns(struct mcount_disasm_engine *disasm,
 		       struct mcount_dynamic_info *mdi,
 		       struct mcount_disasm_info *info);
 
+struct user_regs_struct {
+	unsigned long long int r15;
+	unsigned long long int r14;
+	unsigned long long int r13;
+	unsigned long long int r12;
+	unsigned long long int rbp;
+	unsigned long long int rbx;
+	unsigned long long int r11;
+	unsigned long long int r10;
+	unsigned long long int r9;
+	unsigned long long int r8;
+	unsigned long long int rax;
+	unsigned long long int rcx;
+	unsigned long long int rdx;
+	unsigned long long int rsi;
+	unsigned long long int rdi;
+	unsigned long long int orig_rax;
+	unsigned long long int rip;
+	unsigned long long int cs;
+	unsigned long long int eflags;
+	unsigned long long int rsp;
+	unsigned long long int ss;
+	unsigned long long int fs_base;
+	unsigned long long int gs_base;
+	unsigned long long int ds;
+	unsigned long long int es;
+	unsigned long long int fs;
+	unsigned long long int gs;
+};
+
+#define ARCH_REGS	struct user_regs_struct
+#define ARCH_PC_TYPE	typeof(((ARCH_REGS *)0)->rip)
+
+inline ARCH_PC_TYPE get_pc(ARCH_REGS regs)
+{
+	return regs.rip;
+}
+
+inline void set_pc(ARCH_REGS *regs, ARCH_PC_TYPE pc)
+{
+	regs->rip = pc;
+}
+
 #endif /* MCOUNT_ARCH_H */
