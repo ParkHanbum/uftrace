@@ -117,6 +117,7 @@ include $(srcdir)/Makefile.include
 
 LIBMCOUNT_TARGETS := libmcount/libmcount.so libmcount/libmcount-fast.so
 LIBMCOUNT_TARGETS += libmcount/libmcount-single.so libmcount/libmcount-fast-single.so
+LIBMCOUNT_TARGETS += libmcount/libmcount-dynamic.so
 
 _TARGETS := uftrace libtraceevent/libtraceevent.a
 _TARGETS += $(LIBMCOUNT_TARGETS) libmcount/libmcount-nop.so
@@ -143,6 +144,7 @@ UFTRACE_HDRS := $(filter-out $(srcdir)/version.h,$(wildcard $(srcdir)/*.h $(srcd
 UFTRACE_HDRS += $(srcdir)/libmcount/mcount.h $(wildcard $(srcdir)/arch/$(ARCH)/*.h)
 
 LIBMCOUNT_SRCS := $(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c))
+LIBMCOUNT_SRCS := $(filter-out %-dynamic.c,$(LIBMCOUNT_SRCS))
 LIBMCOUNT_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_SRCS))
 LIBMCOUNT_FAST_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-fast.op,$(LIBMCOUNT_OBJS))
 LIBMCOUNT_SINGLE_OBJS := $(patsubst $(objdir)/%.op,$(objdir)/%-single.op,$(LIBMCOUNT_OBJS))
@@ -153,6 +155,7 @@ LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/rbtree.c $(srcdir)/utils/filter.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/demangle.c $(srcdir)/utils/utils.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/script.c $(srcdir)/utils/script-python.c
 LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/auto-args.c $(srcdir)/utils/dwarf.c
+LIBMCOUNT_UTILS_SRCS += $(srcdir)/utils/env-file.c
 LIBMCOUNT_UTILS_SRCS += $(wildcard $(srcdir)/utils/symbol*.c)
 LIBMCOUNT_UTILS_OBJS := $(patsubst $(srcdir)/utils/%.c,$(objdir)/libmcount/%.op,$(LIBMCOUNT_UTILS_SRCS))
 
@@ -160,6 +163,9 @@ LIBMCOUNT_NOP_SRCS := $(srcdir)/libmcount/mcount-nop.c
 LIBMCOUNT_NOP_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%.op,$(LIBMCOUNT_NOP_SRCS))
 
 LIBMCOUNT_ARCH_OBJS := $(objdir)/arch/$(ARCH)/mcount-entry.op
+
+LIBMCOUNT_DYN_SRCS := $(filter-out %mcount.c,$(filter-out %-nop.c,$(wildcard $(srcdir)/libmcount/*.c)))
+LIBMCOUNT_DYN_OBJS := $(patsubst $(srcdir)/%.c,$(objdir)/%-dynamic.op,$(LIBMCOUNT_DYN_SRCS))
 
 COMMON_DEPS := $(objdir)/.config $(UFTRACE_HDRS)
 LIBMCOUNT_DEPS := $(COMMON_DEPS) $(srcdir)/libmcount/internal.h
@@ -222,6 +228,12 @@ $(objdir)/libmcount/libmcount-fast-single.so: $(LIBMCOUNT_FAST_SINGLE_OBJS) $(LI
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
 $(objdir)/libmcount/libmcount-nop.so: $(LIBMCOUNT_NOP_OBJS)
+	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
+
+$(LIBMCOUNT_DYN_OBJS): $(objdir)/%-dynamic.op: $(srcdir)/%.c $(LIBMCOUNT_DEPS)
+	$(QUIET_CC_FPIC)$(CC) $(LIB_CFLAGS) -c -o $@ $<
+
+$(objdir)/libmcount/libmcount-dynamic.so: $(objdir)/libmcount/mcount.op $(LIBMCOUNT_DYN_OBJS) $(LIBMCOUNT_UTILS_OBJS) $(LIBMCOUNT_ARCH_OBJS)
 	$(QUIET_LINK)$(CC) -shared -o $@ $^ $(LIB_LDFLAGS)
 
 $(LIBMCOUNT_ARCH_OBJS): $(wildcard $(srcdir)/arch/$(ARCH)/*.[cS]) $(LIBMCOUNT_DEPS)
