@@ -23,13 +23,13 @@ int elf_init(const char *filename, struct uftrace_elf_data *elf)
 
 	elf->handle = elf_begin(elf->fd, ELF_C_READ_MMAP, NULL);
 	if (elf->handle == NULL) {
-		pr_dbg("ELF error during symbol loading: %s\n",
+		pr_err_ns("ELF error during symbol loading: %s\n",
 		       elf_errmsg(elf_errno()));
 		return -1;
 	}
 
 	if (gelf_getehdr(elf->handle, &elf->ehdr) == NULL) {
-		pr_dbg("ELF error during symbol loading: %s\n",
+		pr_err_ns("ELF error during symbol loading: %s\n",
 		       elf_errmsg(elf_errno()));
 		return -1;
 	}

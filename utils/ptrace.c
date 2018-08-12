@@ -104,13 +104,19 @@ void check_target_sig(int pid)
 	 * (most likely a segfault).
 	 */
 	if (targetsig.si_signo != SIGTRAP) {
-		pr_dbg("instead of expected SIGTRAP, target stopped with "
-			"signal %d: %s\n", targetsig.si_signo,
-			strsignal(targetsig.si_signo));
-		pr_dbg("sending process %d a SIGSTOP signal for debugging "
-			"purposes\n", pid);
-		ptrace(PTRACE_CONT, pid, NULL, SIGSTOP);
-		pr_err_ns("EXIT");
+		if (targetsig.si_signo == SIGPROF) {
+			pr_dbg("Received SIGPROF\n");
+
+		}
+		else {
+			pr_dbg("instead of expected SIGTRAP, target stopped with "
+				"signal %d: %s\n", targetsig.si_signo,
+				strsignal(targetsig.si_signo));
+			pr_dbg("sending process %d a SIGSTOP signal for debugging "
+				"purposes\n", pid);
+			ptrace(PTRACE_CONT, pid, NULL, SIGSTOP);
+			pr_err_ns("EXIT");
+		}
 	}
 }
 

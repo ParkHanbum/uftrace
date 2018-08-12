@@ -67,13 +67,16 @@ unsigned int get_tids(pid_t pid, pid_t **tids)
 #define MACHINE_STACK_SIZE 8
 void seal_thread(pid_t tid, uintptr_t injected_addr)
 {
+	/*
 	uintptr_t rsp;
 	uint32_t loop_enter_off = (uintptr_t)inject_loop_enter
 				 - (uintptr_t)&inject_contents_start;
 
 	struct user_regs_struct regs;
 	memset(&regs, 0, sizeof(struct user_regs_struct));
+	*/
 	ptrace_attach(tid);
+	/*
 	ptrace_getregs(tid, &regs);
 
 	// prepare sealing. store current PC to top of stack.
@@ -84,6 +87,7 @@ void seal_thread(pid_t tid, uintptr_t injected_addr)
 	// move PC to loop room to loop until injecting libmcount is done.
 	regs.rip = injected_addr + loop_enter_off + 2;
 	ptrace_setregs(tid, &regs);
+	*/
 }
 
 int seal_threads(pid_t pid, uintptr_t injected_addr,
@@ -104,7 +108,8 @@ int seal_threads(pid_t pid, uintptr_t injected_addr,
 
 void release_thread(pid_t tid)
 {
-	int unlock = 1;
+	/*
+	long unlock = 1;
 	siginfo_t sig;
 	struct user_regs_struct regs;
 
@@ -113,8 +118,11 @@ void release_thread(pid_t tid)
 
 	// top of stack must be 0 to represent lock.
 	ptrace_write(tid, regs.rsp, &unlock, MACHINE_STACK_SIZE);
+	pr_dbg("[%d] Write to [%llx] \n", tid, regs.rsp);
 	ptrace_getsiginfo(tid, &sig);
+	*/
 	ptrace(PTRACE_CONT, tid, NULL, NULL);
+	ptrace(PTRACE_DETACH, tid, NULL, NULL);
 }
 
 void release_threads(pid_t **tids, int thread_count)

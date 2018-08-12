@@ -40,6 +40,7 @@ struct uftrace_elf_data {
 	size_t		file_size;
 	Elf_Ehdr	ehdr;
 	unsigned long	flags;
+	bool		have_section;
 };
 
 struct uftrace_elf_iter {
@@ -91,7 +92,7 @@ struct uftrace_elf_iter {
 #define elf_for_each_shdr(elf, iter)					\
 	for (elf_get_strtab((elf), (iter), (elf)->ehdr.e_shstrndx),	\
 		     (iter)->i = 0, (iter)->nr = (elf)->ehdr.e_shnum;	\
-	     (iter)->i < (iter)->nr &&					\
+	     	(iter)->i < (iter)->nr && (elf)->have_section &&	\
 		     memcpy(&(iter)->shdr,				\
 			    (elf)->file_map + (elf)->ehdr.e_shoff +	\
 			    (iter)->i * (elf)->ehdr.e_shentsize,	\
