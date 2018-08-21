@@ -59,6 +59,7 @@ enum trigger_read_type {
 	TRIGGER_READ_PMU_CYCLE    = 4,
 	TRIGGER_READ_PMU_CACHE    = 8,
 	TRIGGER_READ_PMU_BRANCH   = 16,
+	TRIGGER_READ_GLOBAL_VARS  = 32,
 };
 
 #define ARG_TYPE_INDEX  0
@@ -150,6 +151,10 @@ struct uftrace_pmu_cache {
 struct uftrace_pmu_branch {
 	uint64_t		branch;  /* branch instructions */
 	uint64_t		misses;  /* branch misses */
+};
+
+struct uftrace_global_vars {
+	uint64_t		count;	 /* record call count for test */
 };
 
 typedef void (*trigger_fn_t)(struct uftrace_trigger *tr, void *arg);

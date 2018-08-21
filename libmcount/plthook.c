@@ -795,6 +795,7 @@ unsigned long plthook_entry(unsigned long *ret_addr, unsigned long child_idx,
 	if (mcount_auto_recover)
 		mcount_auto_restore(mtdp);
 
+	pr_dbg("plthook entered. \n");
 	mcount_entry_filter_record(mtdp, rstack, &tr, regs);
 
 	if (unlikely(special_flag)) {

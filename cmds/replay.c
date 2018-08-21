@@ -310,6 +310,7 @@ static void print_event(struct ftrace_task_handle *task,
 			struct uftrace_pmu_cycle  *cycle;
 			struct uftrace_pmu_cache  *cache;
 			struct uftrace_pmu_branch *branch;
+			struct uftrace_global_vars *global;
 		} u;
 
 		switch (evt_id) {
@@ -338,6 +339,12 @@ static void print_event(struct ftrace_task_handle *task,
 			pr_color(color, "%s (branch=%"PRIu64", misses=%"PRIu64")",
 				 evt_name, u.branch->branch, u.branch->misses);
 			return;
+		case EVENT_ID_READ_GLOBAL_VARS:
+			u.global = task->args.data;
+			pr_color(color, "%s called %lu times",
+				 evt_name, u.global->count);
+			return;
+
 		case EVENT_ID_DIFF_PROC_STATM:
 			u.statm = task->args.data;
 			pr_color(color, "%s (size=%+"PRId64"KB, rss=%+"PRId64"KB, shared=%+"PRId64"KB)",
@@ -365,6 +372,11 @@ static void print_event(struct ftrace_task_handle *task,
 			pr_color(color, "%s (branch=%+"PRId64", misses=%+"PRId64", predict=%d%%)",
 				 evt_name, u.branch->branch, u.branch->misses,
 				 (u.branch->branch - u.branch->misses) * 100 / u.branch->branch);
+			return;
+		case EVENT_ID_DIFF_GLOBAL_VARS:
+			u.global = task->args.data;
+			pr_color(color, "%s (called %lu times)",
+				 evt_name, u.global->count);
 			return;
 		default:
 			pr_color(color, "%s", evt_name);

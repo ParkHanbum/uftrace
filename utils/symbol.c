@@ -169,7 +169,9 @@ static int load_symbol(struct symtab *symtab, unsigned long prev_sym_value,
 		return 0;
 
 	if (elf_symbol_type(elf_sym) != STT_FUNC &&
-	    elf_symbol_type(elf_sym) != STT_GNU_IFUNC)
+	    elf_symbol_type(elf_sym) != STT_GNU_IFUNC &&
+	    !(elf_symbol_type(elf_sym) == STT_OBJECT &&
+	     elf_symbol_bind(elf_sym) == STB_GLOBAL))
 		return 0;
 
 	/* skip aliases */
@@ -194,7 +196,10 @@ static int load_symbol(struct symtab *symtab, unsigned long prev_sym_value,
 		sym->type = ST_LOCAL;
 		break;
 	case STB_GLOBAL:
-		sym->type = ST_GLOBAL;
+		if (elf_symbol_type(elf_sym) == STT_OBJECT)
+			sym->type = ST_GVAR;
+		else
+			sym->type = ST_GLOBAL;
 		break;
 	case STB_WEAK:
 		sym->type = ST_WEAK;
@@ -206,10 +211,18 @@ static int load_symbol(struct symtab *symtab, unsigned long prev_sym_value,
 
 	name = elf_get_name(elf, iter, elf_sym->st_name);
 
+
 	if (flags & SYMTAB_FL_DEMANGLE)
 		sym->name = demangle(name);
 	else
 		sym->name = xstrdup(name);
+
+	// for develope
+	if (elf_symbol_type(elf_sym) == STT_OBJECT &&
+	    elf_symbol_bind(elf_sym) == STB_GLOBAL)
+		pr_dbg("[DEV] [%zd] %c %"PRIx64" + %-5u %s\n", symtab->nr_sym,
+			sym->type, sym->addr, sym->size, sym->name);
+
 
 	pr_dbg3("[%zd] %c %"PRIx64" + %-5u %s\n", symtab->nr_sym,
 		sym->type, sym->addr, sym->size, sym->name);
@@ -285,6 +298,8 @@ static int load_symtab(struct symtab *symtab, const char *filename,
 	unsigned long prev_sym_value = -1;
 	struct uftrace_elf_data elf;
 	struct uftrace_elf_iter iter;
+
+	pr_dbg("[DEV] %s : load_symtab called.\n", filename);
 
 	if (elf_init(filename, &elf) < 0) {
 		pr_dbg("error during open symbol file: %s: %m\n", filename);
@@ -824,6 +839,7 @@ void load_symtabs(struct symtabs *symtabs, const char *dirname,
 	if (symtabs->loaded)
 		return;
 
+	pr_dbg("[DEV] %s : %s  : load_symtabs called. \n", dirname, filename);
 	symtabs->dirname = dirname;
 	symtabs->filename = filename;
 
@@ -903,6 +919,9 @@ void load_module_symtabs(struct symtabs *symtabs)
 	size_t k;
 	unsigned long flags = symtabs->flags;
 	const char *exec_path = symtabs->filename;
+
+
+	pr_dbg("[DEV] called load_module_symtabs\n");
 
 	maps = symtabs->maps;
 	while (maps) {
@@ -1631,8 +1650,8 @@ void print_symtabs(struct symtabs *symtabs)
 		struct sym *sym = &stab->sym[i];
 
 		name = symbol_getname(sym, sym->addr);
-		pr_out("[%2zd] %#"PRIx64": %s (size: %u)\n",
-		       i, sym->addr, name, sym->size);
+		pr_out("[%2zd] [%c] %#"PRIx64": %s (size: %u)\n",
+		       i, (char) sym->type, sym->addr, name, sym->size);
 		symbol_putname(sym, name);
 	}
 

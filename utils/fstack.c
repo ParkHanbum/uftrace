@@ -1221,6 +1221,12 @@ char *get_event_name(struct ftrace_file_handle *handle, unsigned evt_id)
 		case EVENT_ID_DIFF_PMU_BRANCH:
 			xasprintf(&evt_name, "diff:pmu-branch");
 			break;
+		case EVENT_ID_READ_GLOBAL_VARS:
+			xasprintf(&evt_name, "read:global-vars");
+			break;
+		case EVENT_ID_DIFF_GLOBAL_VARS:
+			xasprintf(&evt_name, "diff:global-vars");
+			break;
 		default:
 			xasprintf(&evt_name, "builtin_event:%u", evt_id);
 			break;
@@ -1245,6 +1251,7 @@ int read_task_event(struct ftrace_task_handle *task,
 		struct uftrace_pmu_cycle  cycle;
 		struct uftrace_pmu_cache  cache;
 		struct uftrace_pmu_branch branch;
+		struct uftrace_global_vars global;
 	} u;
 
 	switch (rec->addr) {
@@ -1312,6 +1319,18 @@ int read_task_event(struct ftrace_task_handle *task,
 		}
 
 		save_task_event(task, &u.branch, sizeof(u.branch));
+		break;
+
+	case EVENT_ID_READ_GLOBAL_VARS:
+	case EVENT_ID_DIFF_GLOBAL_VARS:
+		if (read_task_event_size(task, &u.global, sizeof(u.global)) < 0)
+			return -1;
+
+		if (task->h->needs_byte_swap) {
+			u.global.count = bswap_64(u.global.count);
+		}
+
+		save_task_event(task, &u.global, sizeof(u.global));
 		break;
 
 	default:

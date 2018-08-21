@@ -33,6 +33,7 @@ enum symtype {
 	ST_WEAK		= 'w',
 	ST_PLT		= 'P',
 	ST_KERNEL	= 'K',
+	ST_GVAR		= 'G',
 };
 
 struct sym {

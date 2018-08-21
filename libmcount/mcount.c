@@ -850,6 +850,7 @@ int mcount_entry(unsigned long *parent_loc, unsigned long child,
 	struct mcount_ret_stack *rstack;
 	struct uftrace_trigger tr;
 
+	pr_dbg("mcount_entry \n");
 	/* Access the mtd through TSD pointer to reduce TLS overhead */
 	mtdp = get_thread_data();
 	if (unlikely(check_thread_data(mtdp))) {

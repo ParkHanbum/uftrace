@@ -933,6 +933,7 @@ int read_uftrace_info(uint64_t info_mask, struct ftrace_file_handle *handle)
 void clear_uftrace_info(struct uftrace_info *info)
 {
 	free(info->exename);
+	pr_dbg("HALO?");
 	free(info->cmdline);
 	free(info->cpudesc);
 	free(info->meminfo);

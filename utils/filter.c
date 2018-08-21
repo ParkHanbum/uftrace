@@ -690,6 +690,8 @@ static int parse_read_action(char *action, struct uftrace_trigger *tr)
 		tr->read |= TRIGGER_READ_PMU_CACHE;
 	if (!strcmp(target, "pmu-branch"))
 		tr->read |= TRIGGER_READ_PMU_BRANCH;
+	if (!strcmp(target, "global-vars"))
+		tr->read |= TRIGGER_READ_GLOBAL_VARS;
 
 	/* set READ flag only if valid type set */
 	if (tr->read)

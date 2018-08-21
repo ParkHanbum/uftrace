@@ -17,10 +17,13 @@
 #include "mcount-arch.h"
 #include "utils/utils.h"
 #include "utils/filter.h"
+#include "utils/symbol.h"
 
 #define SHMEM_SESSION_FMT  "/uftrace-%s-%d-%03d" /* session-id, tid, seq */
 
 #define ARG_STR_MAX	98
+
+extern struct symtabs symtabs;
 
 static struct mcount_shmem_buffer *allocate_shmem_buffer(char *buf, size_t size,
 							 int tid, int idx)
@@ -577,6 +580,7 @@ static int save_page_fault(void *buf)
 	struct rusage ru;
 	struct uftrace_page_fault *page_fault = buf;
 
+	pr_dbg("save_page_fault \n");
 	/* getrusage provides faults info in a single syscall */
 	if (getrusage(RUSAGE_SELF, &ru) < 0)
 		return -1;
@@ -637,6 +641,37 @@ static void diff_pmu_branch(void *dst, void *src)
 	dst_branch->misses -= src_branch->misses;
 }
 
+static int save_global_vars(void *buf)
+{
+	struct uftrace_global_vars *gvar = buf;
+	pr_dbg("save_global_vars %d\n", gvar->count);
+	// just increase 1 to count.
+	gvar->count += 1;
+
+	struct symtab symtab = symtabs.symtab;
+
+	for (size_t i=0;i<symtab.nr_sym;i++) {
+		struct sym sym = symtab.sym[i];
+		if (sym.type != ST_GVAR)
+			continue;
+		pr_dbg("SYMTAB count : %d\n", symtab.nr_sym);
+		pr_dbg("SYMTAB num : %d\n", i);
+		pr_dbg("SYMTAB name : %s\n", sym.name);
+	}
+
+	return 0;
+}
+
+static void diff_global_vars(void *dst, void *src)
+{
+	struct uftrace_global_vars *dst_gvar = dst;
+	struct uftrace_global_vars *src_gvar = src;
+	pr_dbg("diff_global_vars %d %d\n", dst_gvar->count, src_gvar->count);
+
+	dst_gvar->count = src_gvar->count + 1;
+}
+
+
 /* above functions should follow the name convention to use below macro */
 #define TR_ID(_evt)  TRIGGER_READ_##_evt, EVENT_ID_READ_##_evt, EVENT_ID_DIFF_##_evt
 #define TR_DS(_evt)  sizeof(struct uftrace_##_evt)
@@ -655,6 +690,7 @@ static struct read_event_data {
 	{ TR_ID(PMU_CYCLE),  TR_DS(pmu_cycle),  TR_FN(pmu_cycle)  },
 	{ TR_ID(PMU_CACHE),  TR_DS(pmu_cache),  TR_FN(pmu_cache)  },
 	{ TR_ID(PMU_BRANCH), TR_DS(pmu_branch), TR_FN(pmu_branch) },
+	{ TR_ID(GLOBAL_VARS), TR_DS(global_vars), TR_FN(global_vars) },
 };
 
 #undef TR_ID
@@ -693,6 +729,7 @@ void save_trigger_read(struct mcount_thread_data *mtdp,
 		event->dsize = red->size;
 		event->idx   = mtdp->idx;
 
+		pr_dbg("when did called save : [%d] %lu\n", event->idx, event->time);
 		if (red->save(event->data) < 0)
 			continue;
 
