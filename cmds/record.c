@@ -19,6 +19,7 @@
 #include <sys/resource.h>
 #include <sys/epoll.h>
 #include <sys/personality.h>
+#include <sys/statvfs.h>
 
 #include "uftrace.h"
 #include "libmcount/mcount.h"
@@ -29,6 +30,9 @@
 #include "utils/kernel.h"
 #include "utils/perf.h"
 
+/* for check availiable space of shared memory */
+#define SHMEM_PATH 		"/dev/shm"
+#define MIN_SHMEM_SPACE		(1*1024*1024)
 #define SHMEM_NAME_SIZE (64 - (int)sizeof(struct list_head))
 
 struct shmem_list {
@@ -59,6 +63,19 @@ static int thread_ctl[2];
 static bool has_perf_event;
 static bool has_sched_event;
 static bool finish_received;
+
+static void check_shmem_freespace(void)
+{
+	struct statvfs stat;
+	long space;
+
+	if (statvfs(SHMEM_PATH, &stat) != 0)
+		pr_err("Cannot access shared memory.\n");
+
+	space = stat.f_bsize * stat.f_bavail;
+	if (space < MIN_SHMEM_SPACE)
+		pr_warn("Freespace of shared memory is too small.\n");
+}
 
 static bool can_use_fast_libmcount(struct opts *opts)
 {
@@ -1964,6 +1981,7 @@ int command_record(int argc, char *argv[], struct opts *opts)
 
 	check_binary(opts);
 	check_perf_event(opts);
+	check_shmem_freespace();
 
 	fflush(stdout);
 
