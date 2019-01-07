@@ -59,6 +59,9 @@ void config_for_dynamic(void)
 	struct stat statbuf;
 	char fd_path[64];
 
+	char *plthook_str;
+	bool nest_libcall;
+
 	uftrace_pid_str = getenv("UFTRACE_PID");
 	if (uftrace_pid_str) {
 		uftrace_pid = strtol(uftrace_pid_str, NULL, 0);
@@ -82,6 +85,14 @@ void config_for_dynamic(void)
 
 	if (pfd == -1)
 		pr_dbg("Faild to open PIPE : %s\n", fd_path);
+
+	nest_libcall = !!getenv("UFTRACE_NEST_LIBCALL");
+	plthook_str = getenv("UFTRACE_PLTHOOK");
+
+	if (plthook_str)
+		mcount_setup_plthook(mcount_exename, nest_libcall);
+
+
 }
 
 /*

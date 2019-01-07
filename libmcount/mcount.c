@@ -1618,13 +1618,11 @@ static __used void mcount_startup(void)
 	char *threshold_str;
 	char *color_str;
 	char *demangle_str;
-	char *plthook_str;
 	char *patch_str;
 	char *event_str;
 	char *dirname;
 	char *pattern_str;
 	struct stat statbuf;
-	bool nest_libcall;
 	enum uftrace_pattern_type patt_type = PATT_REGEX;
 
 	if (!(mcount_global_flags & MCOUNT_GFL_SETUP))
@@ -1646,11 +1644,9 @@ static __used void mcount_startup(void)
 	color_str = getenv("UFTRACE_COLOR");
 	threshold_str = getenv("UFTRACE_THRESHOLD");
 	demangle_str = getenv("UFTRACE_DEMANGLE");
-	plthook_str = getenv("UFTRACE_PLTHOOK");
 	patch_str = getenv("UFTRACE_PATCH");
 	event_str = getenv("UFTRACE_EVENT");
 	script_str = getenv("UFTRACE_SCRIPT");
-	nest_libcall = !!getenv("UFTRACE_NEST_LIBCALL");
 	pattern_str = getenv("UFTRACE_PATTERN");
 
 	page_size_in_kb = getpagesize() / KB;
@@ -1737,9 +1733,6 @@ static __used void mcount_startup(void)
 
 	if (event_str)
 		mcount_setup_events(dirname, event_str, patt_type);
-
-	if (plthook_str)
-		mcount_setup_plthook(mcount_exename, nest_libcall);
 
 	if (getenv("UFTRACE_KERNEL_PID_UPDATE"))
 		kernel_pid_update = true;
@@ -1834,6 +1827,14 @@ __weak void pre_startup(void)
 __weak void post_startup(void)
 {
 	// do something post "mcount_startup" here.
+	char *plthook_str;
+	bool nest_libcall;
+
+	nest_libcall = !!getenv("UFTRACE_NEST_LIBCALL");
+	plthook_str = getenv("UFTRACE_PLTHOOK");
+
+	if (plthook_str)
+		mcount_setup_plthook(mcount_exename, nest_libcall);
 }
 
 /*
