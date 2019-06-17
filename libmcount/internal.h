@@ -269,6 +269,7 @@ extern void mcount_rstack_reset_exception(struct mcount_thread_data *mtdp,
 extern void mcount_auto_restore(struct mcount_thread_data *mtdp);
 extern void mcount_auto_reset(struct mcount_thread_data *mtdp);
 extern bool mcount_rstack_has_plthook(struct mcount_thread_data *mtdp);
+extern bool mcount_is_point_text(unsigned long *ploc);
 
 extern void prepare_shmem_buffer(struct mcount_thread_data *mtdp);
 extern void clear_shmem_buffer(struct mcount_thread_data *mtdp);

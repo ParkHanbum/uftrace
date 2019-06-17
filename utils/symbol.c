@@ -213,11 +213,11 @@ static int load_symbol(struct symtab *symtab, unsigned long prev_sym_value,
 		return 0;
 
 	if (elf_sym->st_size == 0)
-		return 0;
+		elf_sym->st_size = 11;
+//		return 0;
 
 	if (elf_symbol_type(elf_sym) != STT_FUNC &&
-	    elf_symbol_type(elf_sym) != STT_GNU_IFUNC &&
-	    elf_symbol_type(elf_sym) != STT_OBJECT)
+	    elf_symbol_type(elf_sym) != STT_GNU_IFUNC)
 		return 0;
 
 	/* skip aliases */

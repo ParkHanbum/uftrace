@@ -113,6 +113,7 @@ void *mcount_find_code(unsigned long addr)
 	if (orig == NULL)
 		return NULL;
 
+	pr_dbg2("INSN ADDR : 0x%llx\n", orig->insn);
 	return orig->insn;
 }
 
@@ -301,25 +302,35 @@ static int do_dynamic_update(struct symtabs *symtabs, char *patch_funcs,
 					break;
 				}
 			}
+
+			pr_dbg("Trying to... : %s\n", sym->name);
+
 			if (csu_skip)
 				continue;
 
 			if (sym->type != ST_LOCAL_FUNC &&
-			    sym->type != ST_GLOBAL_FUNC)
+			    sym->type != ST_GLOBAL_FUNC) {
+				pr_dbg("Continue...... [Reason] type\n");
 				continue;
+			}
 
-			if (!match_filter_pattern(&patt, sym->name))
+			if (!match_filter_pattern(&patt, sym->name)) {
+				pr_dbg("Continue...... [Reason] filter\n");
 				continue;
+			}
 
 			found = true;
 			switch (mcount_patch_func(mdi, sym, disasm, min_size)) {
 			case INSTRUMENT_FAILED:
+				pr_dbg("FAILED............\n");
 				stats.failed++;
 				break;
 			case INSTRUMENT_SKIPPED:
+				pr_dbg("SKIPEED............\n");
 				stats.skipped++;
 				break;
 			case INSTRUMENT_SUCCESS:
+				pr_dbg("SUCCESS............\n");
 			default:
 				break;
 			}

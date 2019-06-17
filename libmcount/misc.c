@@ -12,6 +12,8 @@
 #include "libmcount/internal.h"
 #include "utils/utils.h"
 
+extern struct symtabs symtabs;
+
 /* old kernel never updates pid filter for a forked child */
 void update_kernel_tid(int tid)
 {
@@ -149,7 +151,8 @@ void mcount_rstack_restore(struct mcount_thread_data *mtdp)
 		rstack = &mtdp->rstack[idx];
 
 		if (rstack->parent_ip == mcount_return_fn ||
-		    rstack->parent_ip == (unsigned long)plthook_return)
+		    rstack->parent_ip == (unsigned long)plthook_return ||
+		    rstack->parent_ip == 0)
 			continue;
 
 		if (!ARCH_CAN_RESTORE_PLTHOOK &&
@@ -169,6 +172,9 @@ void mcount_rstack_reset(struct mcount_thread_data *mtdp)
 	for (idx = mtdp->idx - 1; idx >= 0; idx--) {
 		rstack = &mtdp->rstack[idx];
 
+		if (rstack->parent_loc == (void *)0)
+			continue;
+
 		if (rstack->dyn_idx == MCOUNT_INVALID_DYNIDX)
 			*rstack->parent_loc = mcount_return_fn;
 		else if (ARCH_CAN_RESTORE_PLTHOOK)
@@ -176,10 +182,64 @@ void mcount_rstack_reset(struct mcount_thread_data *mtdp)
 	}
 }
 
+
+/*
+ * Check whether the value inside parent_loc points to the code.
+ * value stored in parent_loc may not be the return address.
+ */
+bool mcount_is_point_text(unsigned long *ploc)
+{
+	struct uftrace_mmap *map;
+
+	pr_dbg("[CURRENT] PARENT_LOC : 0x%lx \t value : 0x%lx \t", ploc, *(ploc));
+
+	map = find_map(&symtabs, *(ploc));
+
+	if (map != NULL && map->prot[2] == 'x') {
+		return true;
+		/*
+		bool flag = false;
+
+		if (((uint64_t)*ploc) == &dynamic_return) {
+			pr_dbg(" dynamic_return \n ");
+			flag = true;
+		} else {
+			uint64_t instr = *(uint64_t *)((uint64_t)(*ploc) - 0x8);
+			pr_dbg("test codes : %lx \n", instr);
+			if ((instr & 0x0000000000FF0000) == 0x0000000000FF0000) {
+				for_dbg = (uint64_t)(*ploc) - 0x6;
+				pr_dbg("[0xFF0000000000] : 0x%lx \n ", (uint64_t)(*ploc) - 0x6);
+				flag = true;
+			} else if ((instr & 0x00000000E8000000) == 0x00000000E8000000) {
+				for_dbg = (uint64_t)(*ploc) - 0x5;
+				pr_dbg("[0xE800000000] : 0x%lx \n ", (uint64_t)(*ploc) - 0x5);
+				flag = true;
+			} else if ((instr & 0x0000FF0000000000) == 0x0000FF0000000000) {
+				for_dbg = (uint64_t)(*ploc) - 0x3;
+				pr_dbg("[0xFF0000] : 0x%lx \n ", (uint64_t)(*ploc) - 0x3);
+				flag = true;
+			} else if ((instr & 0x00FF000000000000) == 0x00FF000000000000) {
+				for_dbg = (uint64_t)(*ploc) - 0x2;
+				pr_dbg("[0xFF00] : 0x%lx \n ", (uint64_t)(*ploc) - 0x2);
+				flag = true;
+			}
+		}
+
+		return flag;
+		*/
+	}
+
+	pr_dbg("!!! [UNTEXT]\n");
+	return false;
+}
+
+
 void mcount_auto_restore(struct mcount_thread_data *mtdp)
 {
 	struct mcount_ret_stack *curr_rstack;
 	struct mcount_ret_stack *prev_rstack;
+
+	int prev_rstack_idx;
 
 	/* auto recover is meaningful only if parent rstack is hooked */
 	if (mtdp->idx < 2)
@@ -189,27 +249,63 @@ void mcount_auto_restore(struct mcount_thread_data *mtdp)
 		return;
 
 	curr_rstack = &mtdp->rstack[mtdp->idx - 1];
-	prev_rstack = &mtdp->rstack[mtdp->idx - 2];
+	// prev_rstack = &mtdp->rstack[mtdp->idx - 2];
+
+	/*
+	 * get the prev_rstack that not create from jump.
+	 */
+	prev_rstack = (void *)0;
+	for (prev_rstack_idx = 2; prev_rstack_idx <= mtdp->idx; prev_rstack_idx++) {
+		prev_rstack = &mtdp->rstack[mtdp->idx - prev_rstack_idx];
+		if (prev_rstack->parent_loc != (void *)0 || prev_rstack->parent_ip != 0) {
+			break;
+		}
+	}
+
+	if (prev_rstack == (void *)0 || prev_rstack->parent_loc == 0)
+		return;
 
 	if (!ARCH_CAN_RESTORE_PLTHOOK &&
 	    prev_rstack->dyn_idx != MCOUNT_INVALID_DYNIDX)
 		return;
 
 	/* ignore tail calls */
-	if (curr_rstack->parent_loc == prev_rstack->parent_loc)
+	if (curr_rstack->parent_loc == prev_rstack->parent_loc) {
+		/*
+		pr_dbg("ignore tail calls : 0x%lx\n", curr_rstack->child_ip);
 		return;
+		*/
+
+		unsigned long ip = curr_rstack->parent_ip;
+
+		if (ip == (unsigned long)plthook_return
+			|| ip == (unsigned long)mcount_return_fn) {
+			pr_dbg("ignore tail calls : 0x%lx\n", curr_rstack->child_ip);
+			return;
+		}
+		else {
+			return;
+		}
+	}
 
 	while (prev_rstack >= mtdp->rstack) {
 		unsigned long parent_ip = prev_rstack->parent_ip;
-
 		/* parent also can be tail-called; skip */
 		if (parent_ip == mcount_return_fn ||
-		    parent_ip == (unsigned long)plthook_return) {
+		    parent_ip == (unsigned long)plthook_return ||
+		    parent_ip == 0) {
 			prev_rstack--;
 			continue;
 		}
 
-		*prev_rstack->parent_loc = parent_ip;
+		// *prev_rstack->parent_loc = parent_ip;
+
+		if (mcount_is_point_text(prev_rstack->parent_loc)) {
+			*prev_rstack->parent_loc = parent_ip;
+		}
+		else
+			pr_dbg("[POINT UNTEXT] parent IP : %lx \n", parent_ip);
+
 		return;
 	}
 }
@@ -218,6 +314,7 @@ void mcount_auto_reset(struct mcount_thread_data *mtdp)
 {
 	struct mcount_ret_stack *curr_rstack;
 	struct mcount_ret_stack *prev_rstack;
+	int prev_rstack_idx;
 
 	/* auto recover is meaningful only if parent rstack is hooked */
 	if (mtdp->idx < 2)
@@ -227,7 +324,21 @@ void mcount_auto_reset(struct mcount_thread_data *mtdp)
 		return;
 
 	curr_rstack = &mtdp->rstack[mtdp->idx - 1];
-	prev_rstack = &mtdp->rstack[mtdp->idx - 2];
+	// prev_rstack = &mtdp->rstack[mtdp->idx - 2];
+
+	/*
+	 * get the prev_rstack that not create from jump.
+	 */
+	prev_rstack = (void *)0;
+	for (prev_rstack_idx = 2; prev_rstack_idx <= mtdp->idx; prev_rstack_idx++) {
+		prev_rstack = &mtdp->rstack[mtdp->idx - prev_rstack_idx];
+		if (prev_rstack->parent_loc != (void *)0 || prev_rstack->parent_ip != 0) {
+			break;
+		}
+	}
+
+	if (prev_rstack->parent_loc == (void *)0)
+		return;
 
 	if (!ARCH_CAN_RESTORE_PLTHOOK &&
 	    prev_rstack->dyn_idx != MCOUNT_INVALID_DYNIDX)
@@ -241,6 +352,16 @@ void mcount_auto_reset(struct mcount_thread_data *mtdp)
 		*prev_rstack->parent_loc = mcount_return_fn;
 	else
 		*prev_rstack->parent_loc = (unsigned long)plthook_return;
+	/*
+	if (prev_rstack->dyn_idx == MCOUNT_INVALID_DYNIDX) {
+		if (mcount_is_point_text(prev_rstack->parent_loc))
+			*prev_rstack->parent_loc = mcount_return_fn;
+	}
+	else {
+		if (mcount_is_point_text(prev_rstack->parent_loc))
+			*prev_rstack->parent_loc = (unsigned long)plthook_return;
+	}
+	*/
 }
 
 #ifdef UNIT_TEST

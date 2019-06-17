@@ -94,6 +94,48 @@ static struct mcount_disasm_engine disasm;
 
 __weak void dynamic_return(void) { }
 
+void mcount_print_func(unsigned long child)
+{
+	char *child_symname;
+	struct sym *sym;
+	sym = find_symtabs(&symtabs, child);
+	child_symname = symbol_getname(sym, child);
+	pr_dbg("[FUNC] Current Child Function : %s\n", child_symname);
+}
+
+void mcount_iterate_mtdp()
+{
+	struct mcount_thread_data *mtdp = get_thread_data();
+	struct mcount_ret_stack *prev_rstack = NULL;
+
+	pr_warn("[IDX] [OFFSET] [PARENT_LOC](CURRENT_VALUE) [PARENT_VALUE](STORED) [CHILD] \n");
+
+	for(int i = 0; i < mtdp->idx; i++)
+	{
+		struct mcount_ret_stack	*rstack = &mtdp->rstack[i];
+		int bp_offset = 0;
+		if (prev_rstack) {
+			bp_offset = prev_rstack->parent_loc - rstack->parent_loc;
+		}
+
+		pr_warn("[%d] [%d] 0x%lx(value:0x%lx)\t 0x%lx\t 0x%lx\n", i, bp_offset,
+				rstack->parent_loc,
+				rstack->parent_loc != 0 ? (uint64_t)*rstack->parent_loc : 0,
+				rstack->parent_ip,
+				rstack->child_ip);
+
+
+		prev_rstack = rstack;
+	}
+}
+
+struct mcount_ret_stack *mcount_print_mtdp(int idx)
+{
+	struct mcount_thread_data *mtdp = get_thread_data();
+	struct mcount_ret_stack	*rstack = &mtdp->rstack[idx];
+	return rstack;
+}
+
 #ifdef DISABLE_MCOUNT_FILTER
 
 static void mcount_filter_init(enum uftrace_pattern_type ptype, char *dirname,
@@ -1260,15 +1302,47 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child,
 	rstack->nr_events  = 0;
 	rstack->event_idx  = ARGBUF_SIZE;
 
-	/* hijack the return address of child */
+/*
+	if (mcount_is_point_text(parent_loc)) {
+	*/
+		rstack->parent_loc = parent_loc;
+		rstack->parent_ip  = *parent_loc;
+		/*
+	}
+	else {
+		rstack->parent_loc = 0;
+		rstack->parent_ip = 0;
+	}
+*/
 	*parent_loc = mcount_return_fn;
+
+	{
+		struct sym *sym;
+		char *child_symname;
+		sym = find_symtabs(&symtabs, child);
+		child_symname = symbol_getname(sym, child);
+
+		sym = find_symtabs(&symtabs, rstack->parent_ip);
+
+		if (strncmp(child_symname, "Builtins_", 9) == 0)
+		{
+			*parent_loc = rstack->parent_ip;
+			rstack->parent_loc = 0;
+			rstack->parent_ip = 0;
+		}
+		else {
+			*parent_loc = mcount_return_fn;
+		}
+	}
 
 	/* restore return address of parent */
 	if (mcount_auto_recover)
 		mcount_auto_restore(mtdp);
 
+
 	mcount_entry_filter_record(mtdp, rstack, &tr, regs);
 	mcount_unguard_recursion(mtdp);
+
 	return 0;
 }
 
@@ -1288,6 +1362,7 @@ static unsigned long __mcount_exit(long *retval)
 	struct mcount_ret_stack *rstack;
 	unsigned long *ret_loc;
 	unsigned long retaddr;
+	int rstack_idx;
 
 	mtdp = get_thread_data();
 	assert(mtdp != NULL);
@@ -1300,7 +1375,23 @@ static unsigned long __mcount_exit(long *retval)
 	 */
 	__mcount_guard_recursion(mtdp);
 
-	rstack = &mtdp->rstack[mtdp->idx - 1];
+	/*
+	 * get the prev_rstack that not create from jump.
+	 */
+	rstack = (void *)0;
+	for (rstack_idx = 1; rstack_idx <= mtdp->idx; rstack_idx++) {
+		rstack = &mtdp->rstack[mtdp->idx - rstack_idx];
+		if (rstack->parent_loc != (void *)0 || rstack->parent_ip != 0) {
+			break;
+		}
+		rstack->end_time = mcount_gettime();
+		mcount_exit_filter_record(mtdp, rstack, retval);
+	}
+
+	if (rstack == (void *)0)
+		pr_err("rstack is null");
+
+	// rstack = &mtdp->rstack[mtdp->idx - 1];
 
 	rstack->end_time = mcount_gettime();
 	mcount_exit_filter_record(mtdp, rstack, retval);
@@ -1327,7 +1418,7 @@ static unsigned long __mcount_exit(long *retval)
 
 	compiler_barrier();
 
-	mtdp->idx--;
+	mtdp->idx -= rstack_idx;
 	return retaddr;
 }
 

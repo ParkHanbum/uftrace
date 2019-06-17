@@ -468,10 +468,11 @@ static int patch_normal_func(struct mcount_dynamic_info *mdi, struct sym *sym,
 	uint64_t sym_addr = sym->addr + mdi->map->start;
 
 	instr_size = disasm_check_insns(disasm, mdi, sym);
+
 	if (instr_size < CALL_INSN_SIZE)
 		return instr_size;
 
-	pr_dbg2("patch normal func: %s (patch size: %d)\n",
+	pr_dbg("patch normal func: %s (patch size: %d)\n",
 		sym->name, instr_size);
 
 	/*
