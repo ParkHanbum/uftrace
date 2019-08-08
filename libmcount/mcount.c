@@ -30,6 +30,8 @@
 #include "utils/filter.h"
 #include "utils/script.h"
 
+bool skip_ret_hook = false;
+
 /* time filter in nsec */
 uint64_t mcount_threshold;
 
@@ -93,6 +95,33 @@ unsigned long mcount_return_fn;
 static struct mcount_disasm_engine disasm;
 
 __weak void dynamic_return(void) { }
+
+__attribute__((optimize("-O3"))) void mcount_iterate_mtdp()
+{
+        struct mcount_thread_data *mtdp = get_thread_data();
+        struct mcount_ret_stack *prev_rstack = NULL;
+
+        pr_warn("[IDX] [OFFSET] [PARENT_LOC](CURRENT_VALUE) [PARENT_VALUE](STORED) [CHILD] \n");
+
+        for(int i = 0; i < mtdp->idx; i++)
+        {
+                struct mcount_ret_stack *rstack = &mtdp->rstack[i];
+                int bp_offset = 0;
+                if (prev_rstack) {
+                        bp_offset = prev_rstack->parent_loc - rstack->parent_loc;
+                }
+
+                pr_warn("[%d] [%d] 0x%lx(value:0x%lx)\t 0x%lx\t 0x%lx\n", i, bp_offset,
+                                rstack->parent_loc,
+                                rstack->parent_loc != 0 ? (uint64_t)*rstack->parent_loc : 0,
+                                rstack->parent_ip,
+                                rstack->child_ip);
+
+
+                prev_rstack = rstack;
+        }
+}
+
 
 #ifdef DISABLE_MCOUNT_FILTER
 
@@ -1245,6 +1274,34 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child,
 	/* fixup the parent_loc in an arch-dependant way (if needed) */
 	parent_loc = mcount_arch_parent_location(&symtabs, parent_loc, child);
 
+	{
+		struct sym *sym;
+		char *child_symname, *parent_symname;
+		sym = find_symtabs(&symtabs, child);
+		child_symname = symbol_getname(sym, child);
+
+		sym = find_symtabs(&symtabs, *parent_loc);
+		parent_symname = symbol_getname(sym, *parent_loc);
+
+		const char *ignores[] = {
+		// "Builtins_CEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit",
+		// "Builtins_CEntry_Return1_DontSaveFPRegs_ArgvInRegister_NoBuiltinExit",
+		 "Builtins_JSEntryTrampoline",
+		// "Builtins_Call_ReceiverIsAny",
+
+		};
+
+		for(unsigned i = 0; i < ARRAY_SIZE(ignores); i++) {
+			if (strcmp(child_symname, ignores[i]) == 0) {
+				skip_ret_hook = true;
+			}
+		}
+
+	}
+
+	if (skip_ret_hook)
+		return 0;
+
 	rstack = &mtdp->rstack[mtdp->idx++];
 
 	rstack->depth      = mtdp->record_idx;
@@ -1299,6 +1356,28 @@ static unsigned long __mcount_exit(long *retval)
 	__mcount_guard_recursion(mtdp);
 
 	rstack = &mtdp->rstack[mtdp->idx - 1];
+
+	{
+		struct sym *sym;
+		char *symname;
+
+		sym = find_symtabs(&symtabs, rstack->parent_ip);
+		symname = symbol_getname(sym, rstack->parent_ip);
+
+		const char *ignores[] = {
+		// "Builtins_CEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit",
+		// "Builtins_CEntry_Return1_DontSaveFPRegs_ArgvInRegister_NoBuiltinExit",
+		 "Builtins_JSEntryTrampoline",
+		// "Builtins_Call_ReceiverIsAny",
+		};
+
+		for(unsigned i = 0; i < ARRAY_SIZE(ignores); i++) {
+			if (strcmp(symname, ignores[i]) == 0) {
+				skip_ret_hook = false;
+			}
+		}
+
+	}
 
 	rstack->end_time = mcount_gettime();
 	mcount_exit_filter_record(mtdp, rstack, retval);

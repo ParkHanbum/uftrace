@@ -196,8 +196,10 @@ void mcount_auto_restore(struct mcount_thread_data *mtdp)
 		return;
 
 	/* ignore tail calls */
-	if (curr_rstack->parent_loc == prev_rstack->parent_loc)
+	if (curr_rstack->parent_loc == prev_rstack->parent_loc) {
+		pr_dbg("ignore tail calls : 0x%lx\n", curr_rstack->child_ip);
 		return;
+	}
 
 	while (prev_rstack >= mtdp->rstack) {
 		unsigned long parent_ip = prev_rstack->parent_ip;

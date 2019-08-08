@@ -42,7 +42,7 @@
 
 GLOBAL(__dentry__)
 	.cfi_startproc
-	sub $48, %rsp
+	sub $348, %rsp
 	.cfi_adjust_cfa_offset 48
 
 	movq %rdi, 40(%rsp)
@@ -53,10 +53,10 @@ GLOBAL(__dentry__)
 	movq %r9,   0(%rsp)
 
 	/* child addr */
-	movq 48(%rsp), %rsi
+	movq 348(%rsp), %rsi
 
 	/* parent location */
-	lea 56(%rsp), %rdi
+	lea 356(%rsp), %rdi
 
 	/* mcount_args */
 	movq %rsp, %rdx
@@ -79,7 +79,7 @@ GLOBAL(__dentry__)
 	movq 24(%rsp), %rdx
 
 	/* child addr */
-	movq 48(%rdx), %rdi
+	movq 348(%rdx), %rdi
 
 	/* find location that has the original code */
 	call mcount_find_code
@@ -88,7 +88,7 @@ GLOBAL(__dentry__)
 	movq 24(%rsp), %rdx
 
 	/* overwrite return address */
-	movq %rax, 48(%rdx)
+	movq %rax, 348(%rdx)
 
 	pop  %r11
 	pop  %r10
@@ -104,7 +104,7 @@ GLOBAL(__dentry__)
 	movq 32(%rsp), %rsi
 	movq 40(%rsp), %rdi
 
-	add $48, %rsp
+	add $348, %rsp
 	.cfi_adjust_cfa_offset -48
 
 	retq
@@ -114,7 +114,7 @@ END(__dentry__)
 
 ENTRY(dynamic_return)
 	.cfi_startproc
-	sub    $96, %rsp
+	sub    $396, %rsp
 	.cfi_def_cfa_offset 96
 
 	/* save all caller-saved registers due to -fipa-ra */
@@ -134,9 +134,15 @@ ENTRY(dynamic_return)
 	/* set the first argument of mcount_exit as pointer to return values */
 	movq   %rsp, %rdi
 
+	/* align stack pointer to 16-byte */
+	andq $0xfffffffffffffff0, %rsp
+	pushq $0
+	pushq %rdi
+
 	/* returns original parent address */
 	call   mcount_exit
-	movq   %rax, 88(%rsp)
+	popq   %rsp
+	movq   %rax, 388(%rsp)
 
 	movq    0(%rsp), %rax
 	movq    8(%rsp), %rdx
@@ -150,7 +156,7 @@ ENTRY(dynamic_return)
 	movq   72(%rsp), %r10
 	movq   80(%rsp), %r11
 
-	add    $88, %rsp
+	add    $388, %rsp
 	.cfi_def_cfa_offset 8
 	retq
 	.cfi_endproc

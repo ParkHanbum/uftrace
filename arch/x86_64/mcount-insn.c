@@ -45,13 +45,17 @@ static bool check_instrumentable(struct mcount_disasm_engine *disasm,
 	cs_detail *detail;
 	bool jmp_or_call = false;
 	bool status = false;
+	char *reason = "[UNKNOWN]";
 
 	/*
 	 * 'detail' can be NULL on "data" instruction
 	 * if SKIPDATA option is turned ON
 	 */
-	if (insn->detail == NULL)
-		return false;
+	if (insn->detail == NULL) {
+		reason = "Cannot parse details";
+		status = false;
+		goto out;
+	}
 
 	detail = insn->detail;
 
@@ -65,32 +69,51 @@ static bool check_instrumentable(struct mcount_disasm_engine *disasm,
 	x86 = &insn->detail->x86;
 
 	/* no operand: disallow just to be safer for now */
-	if (!x86->op_count)
-		return true;
+	if (!x86->op_count) {
+		reason = "No Operands";
+		status = false;
+		goto out;
+	}
 
 	for (i = 0; i < x86->op_count; i++) {
 		cs_x86_op *op = &x86->operands[i];
 
 		switch((int)op->type) {
-		case X86_OP_REG:
-			status = true;
-			break;
-		case X86_OP_IMM:
-			if (jmp_or_call)
-				return false;
-			status = true;
-			break;
-		case X86_OP_MEM:
-			if (op->mem.base == X86_REG_RIP ||
-			    op->mem.index == X86_REG_RIP)
-				return false;
-
-			status = true;
-			break;
-		default:
-			break;
+			case X86_OP_REG:
+				status = true;
+				continue;
+			case X86_OP_IMM:
+				if (jmp_or_call) {
+					reason = "Relative Jump or Call";
+					status = false;
+					goto out;
+				}
+				else {
+					status = true;
+					continue;
+				}
+			case X86_OP_MEM:
+				if (op->mem.base == X86_REG_RIP ||
+				    op->mem.index == X86_REG_RIP) {
+					reason = "Position Independent Code";
+					status = false;
+					goto out;
+				}
+				else {
+					status = true;
+					continue;
+				}
+			default:
+				continue;
 		}
 	}
+
+out:
+	if (!status)
+		pr_dbg("Could not instrument, Reason : %s\n", reason);
+	else
+		pr_dbg("Patched Instr : \n");
+
 	return status;
 }
 
@@ -189,7 +212,7 @@ int disasm_check_insns(struct mcount_disasm_engine *disasm,
 
 	for (i = 0; i < count; i++) {
 		if (!check_instrumentable(disasm, &insn[i])) {
-			pr_dbg3("instruction not supported: %s\t %s\n",
+			pr_dbg("instruction not supported: %s\t %s\n",
 				insn[i].mnemonic, insn[i].op_str);
 			goto out;
 		}
