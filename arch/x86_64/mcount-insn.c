@@ -37,60 +37,104 @@ void mcount_disasm_finish(struct mcount_disasm_engine *disasm)
  *
  * TODO: this function is incomplete and need more classification.
  */
-static bool check_instrumentable(struct mcount_disasm_engine *disasm,
+// define reasons that cause fail to instrument.
+#define INSTRUMENT_FAIL_UNKNOWN		0x00000001L
+#define INSTRUMENT_FAIL_NOOPRND		0x00000001L << 1L
+#define INSTRUMENT_FAIL_RELJMP		0x00000001L << 2L
+#define INSTRUMENT_FAIL_RELCALL		0x00000001L << 3L
+#define INSTRUMENT_FAIL_PICCODE		0x00000001L << 4L
+
+#define OP_GROUP_JMP			1
+#define OP_GROUP_CALL			2
+
+const char* instrument_fail_msg(int reason)
+{
+	const char *res = "UNKNOWN";
+	switch(reason) {
+		case INSTRUMENT_FAIL_NOOPRND:
+			res = "Not supported opcode without operand";
+			break;
+		case INSTRUMENT_FAIL_RELJMP:
+			res = "Not supported opcode that jump to relative address";
+			break;
+		case INSTRUMENT_FAIL_RELCALL:
+			res = "Not supported opcode that call to relative address";
+			break;
+		case INSTRUMENT_FAIL_PICCODE:
+			res = "Not supported Position Independent Code";
+			break;
+	}
+
+	return res;
+}
+
+static int check_instrumentable(struct mcount_disasm_engine *disasm,
 				 cs_insn *insn)
 {
 	int i;
 	cs_x86 *x86;
 	cs_detail *detail;
-	bool jmp_or_call = false;
-	bool status = false;
+	int jmp_or_call = 0;
+	int status = 0;
 
 	/*
 	 * 'detail' can be NULL on "data" instruction
 	 * if SKIPDATA option is turned ON
 	 */
-	if (insn->detail == NULL)
-		return false;
+	if (insn->detail == NULL) {
+		status = INSTRUMENT_FAIL_UNKNOWN;
+		goto out;
+	}
 
 	detail = insn->detail;
 
 	for (i = 0; i < detail->groups_count; i++) {
-		if (detail->groups[i] == CS_GRP_CALL ||
-		    detail->groups[i] == CS_GRP_JUMP) {
-			jmp_or_call = true;
-		}
+		if (detail->groups[i] == CS_GRP_CALL)
+			jmp_or_call = OP_GROUP_CALL;
+		else if (detail->groups[i] == CS_GRP_JUMP)
+			jmp_or_call = OP_GROUP_JMP;
 	}
 
 	x86 = &insn->detail->x86;
 
-	/* no operand: disallow just to be safer for now */
 	if (!x86->op_count)
-		return true;
+		goto out;
 
 	for (i = 0; i < x86->op_count; i++) {
 		cs_x86_op *op = &x86->operands[i];
 
 		switch((int)op->type) {
-		case X86_OP_REG:
-			status = true;
-			break;
-		case X86_OP_IMM:
-			if (jmp_or_call)
-				return false;
-			status = true;
-			break;
-		case X86_OP_MEM:
-			if (op->mem.base == X86_REG_RIP ||
-			    op->mem.index == X86_REG_RIP)
-				return false;
+			case X86_OP_REG:
+				continue;
 
-			status = true;
-			break;
-		default:
-			break;
+			case X86_OP_IMM:
+				if (jmp_or_call > 0) {
+					if (jmp_or_call == OP_GROUP_CALL)
+						status = INSTRUMENT_FAIL_RELCALL;
+					else
+						status = INSTRUMENT_FAIL_RELJMP;
+					goto out;
+				}
+				continue;
+
+			case X86_OP_MEM:
+				if (op->mem.base == X86_REG_RIP ||
+				    op->mem.index == X86_REG_RIP) {
+					status = INSTRUMENT_FAIL_PICCODE;
+					goto out;
+				}
+				continue;
+			default:
+				continue;
 		}
 	}
+
+out:
+	if (status > 0)
+		pr_dbg3("Could not instrument, Reason : %s\n", instrument_fail_msg(status));
+	else
+		pr_dbg3("Patched Instr : \n");
+
 	return status;
 }
 
@@ -188,9 +232,9 @@ int disasm_check_insns(struct mcount_disasm_engine *disasm,
 	}
 
 	for (i = 0; i < count; i++) {
-		if (!check_instrumentable(disasm, &insn[i])) {
-			pr_dbg3("instruction not supported: %s\t %s\n",
-				insn[i].mnemonic, insn[i].op_str);
+		if (check_instrumentable(disasm, &insn[i]) > 0) {
+			pr_dbg3("not supported instruction found at %s : %s\t %s\n",
+				sym->name, insn[i].mnemonic, insn[i].op_str);
 			goto out;
 		}
 
