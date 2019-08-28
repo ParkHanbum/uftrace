@@ -421,7 +421,22 @@ struct mcount_orig_insn {
 	void			*insn;
 };
 
-struct mcount_orig_insn *mcount_save_code(unsigned long addr, unsigned insn_size,
+/*
+ * instrument information structure.
+ * each member has the meaning below:
+ * @size : how many bytes need to patch into function prologue for instrument.
+ * @insns_size : how many bytes need to store info original instruction block.
+ * @addr : targeted function address.
+ * @insns : bytes array to store instruction.
+ */
+struct mcount_instrument_info {
+	int             size;
+	int		insns_size;
+	unsigned long   addr;
+	unsigned char   *insns;
+};
+
+struct mcount_orig_insn *mcount_save_code(struct mcount_instrument_info *info,
 					  void *jmp_insn, unsigned jmp_size);
 void *mcount_find_code(unsigned long addr);
 void mcount_freeze_code(void);
