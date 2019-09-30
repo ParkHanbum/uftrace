@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <dlfcn.h>
 
 /* This should be defined before #include "utils.h" */
 #define PR_FMT     "mcount"
@@ -93,6 +94,27 @@ unsigned long mcount_return_fn;
 static struct mcount_disasm_engine disasm;
 
 __weak void dynamic_return(void) { }
+
+#ifdef SUPPORT_PLUGIN
+#include "plugins/plugin_export.h"
+struct exports_funcs *plugin_funcs;
+void* plugin;
+
+void mcount_initialize_plugin(void *handle, char* script_str)
+{
+	plugin_funcs = dlsym(handle, "ex_funcs");
+
+	if (!plugin_funcs)
+		pr_err("Fail to import plugin functions : %p %s", plugin_funcs, dlerror);
+
+	if (SCRIPT_ENABLED && script_str) {
+		plugin_funcs->bind_script(script_uftrace_entry,
+					  script_uftrace_exit,
+					  script_uftrace_end);
+	}
+}
+
+#endif
 
 #ifdef DISABLE_MCOUNT_FILTER
 
@@ -778,6 +800,10 @@ struct mcount_thread_data * mcount_prepare(void)
 
 static void mcount_finish(void)
 {
+#ifdef SUPPORT_PLUGIN
+	plugin_funcs->mcount_finish();
+#endif
+
 	if (!mcount_should_stop())
 		mcount_trace_finish(false);
 
@@ -1240,6 +1266,10 @@ static int __mcount_entry(unsigned long *parent_loc, unsigned long child,
 	if (mcount_auto_recover)
 		mcount_auto_restore(mtdp);
 
+#ifdef SUPPORT_PLUGIN
+	plugin_funcs->mcount_entry(child, rstack, regs);
+#endif
+
 	mcount_entry_filter_record(mtdp, rstack, &tr, regs);
 	mcount_unguard_recursion(mtdp);
 	return 0;
@@ -1277,6 +1307,11 @@ static unsigned long __mcount_exit(long *retval)
 
 	rstack->end_time = mcount_gettime();
 	mcount_exit_filter_record(mtdp, rstack, retval);
+
+#ifdef SUPPORT_PLUGIN
+	plugin_funcs->mcount_exit(rstack);
+#endif
+
 
 	ret_loc = rstack->parent_loc;
 	retaddr = rstack->parent_ip;
@@ -1784,6 +1819,28 @@ static __used void mcount_startup(void)
 	/* initialize script binding */
 	if (SCRIPT_ENABLED && script_str)
 		mcount_script_init(patt_type);
+
+#ifdef SUPPORT_PLUGIN
+	char *plugin_str;
+	plugin_str = getenv("UFTRACE_PLUGIN_PATH");
+
+	/* initialize plugin */
+	if (getenv("UFTRACE_PLUGIN_PATH"))
+		plugin = dlopen(plugin_str, RTLD_LAZY);
+
+	if (!plugin)
+		pr_err("Fail to load plugin : %s", dlerror());
+
+	mcount_initialize_plugin(plugin, script_str);
+	if (!plugin_funcs->plugin_init())
+		pr_err("Fail to initialize plugin");
+
+	pr_dbg("call func! %p\n", plugin_funcs->mcount_startup);
+	plugin_funcs->mcount_startup(&symtabs);
+
+	// clean-up
+	dlerror();
+#endif
 
 	compiler_barrier();
 	pr_dbg("mcount setup done\n");
