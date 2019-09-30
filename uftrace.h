@@ -196,6 +196,7 @@ bool data_is_lp64(struct uftrace_data *handle);
 
 struct opts {
 	char *lib_path;
+	char *plugin_path;
 	char *filter;
 	char *trigger;
 	char *sig_trigger;

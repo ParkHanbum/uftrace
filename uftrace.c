@@ -105,6 +105,7 @@ enum options {
 
 static struct argp_option uftrace_options[] = {
 	{ "library-path", 'L', "PATH", 0, "Load libraries from this PATH" },
+	{ "plugin-path", 'I', "PATH", 0, "Load plugin from this PATH" },
 	{ "filter", 'F', "FUNC", 0, "Only trace those FUNCs" },
 	{ "notrace", 'N', "FUNC", 0, "Don't trace those FUNCs" },
 	{ "trigger", 'T', "FUNC@act[,act,...]", 0, "Trigger action on those FUNCs" },
@@ -395,6 +396,10 @@ static error_t parse_option(int key, char *arg, struct argp_state *state)
 	switch (key) {
 	case 'L':
 		opts->lib_path = arg;
+		break;
+
+	case 'I':
+		opts->plugin_path = arg;
 		break;
 
 	case 'F':
