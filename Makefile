@@ -31,6 +31,7 @@ libdir = $(prefix)/lib
 etcdir = $(prefix)/etc
 mandir = $(prefix)/share/man
 docdir = $(srcdir)/doc
+plugindir = $(srcdir)/plugins
 
 ifeq ($(DOCLANG), ko)
   docdir = $(srcdir)/doc/ko
@@ -113,6 +114,10 @@ ifeq ($(ASAN), 1)
   SYMBOLS_CFLAGS    += -O0 -g -fsanitize=address -fsanitize=leak
   TRACEEVENT_CFLAGS += -O0 -g -fsanitize=address -fsanitize=leak
   TEST_CFLAGS       += -O0 -g -fsanitize=address -fsanitize=leak
+endif
+
+ifeq ($(PLUGIN), 1)
+  COMMON_CFLAGS  += -DSUPPORT_PLUGIN=1
 endif
 
 export UFTRACE_CFLAGS LIB_CFLAGS TEST_CFLAGS TEST_LDFLAGS
@@ -339,6 +344,9 @@ dist:
 doc:
 	@$(MAKE) -C $(docdir)
 
+plugin:
+	@$(MAKE) -C $(plugindir)
+
 clean:
 	$(call QUIET_CLEAN, uftrace)
 	$(Q)$(RM) $(objdir)/*.o $(objdir)/*.op $(objdir)/*.so $(objdir)/*.a
@@ -351,6 +359,7 @@ clean:
 	@$(MAKE) -sC $(srcdir)/arch/$(ARCH) clean
 	@$(MAKE) -sC $(srcdir)/tests ARCH=$(ARCH) clean
 	@$(MAKE) -sC $(docdir) clean
+	@$(MAKE) -sC $(plugindir) clean
 	@$(MAKE) -sC $(srcdir)/libtraceevent BUILD_SRC=$(srcdir)/libtraceevent BUILD_OUTPUT=$(objdir)/libtraceevent CONFIG_FLAGS="$(TRACEEVENT_CFLAGS)" clean
 
 reset-coverage:
