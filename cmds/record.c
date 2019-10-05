@@ -165,6 +165,26 @@ static void setup_child_environ(struct opts *opts, int argc, char *argv[])
 		}
 	}
 #endif
+#ifdef SUPPORT_PLUGIN
+	char *plugin_path;
+
+	if (opts->plugin_path) {
+		char *plugin = xstrdup(opts->plugin_path);
+
+		if (access(plugin, F_OK) == 0)
+			plugin_path = plugin;
+		else
+			realpath(plugin, plugin_path);
+	}
+
+	if (!plugin_path)
+		pr_dbg("Could not found plugin from %s\n", opts->plugin_path);
+	else {
+		pr_dbg("found plugin %s \n", plugin_path);
+		setenv("UFTRACE_PLUGIN_PATH", plugin_path, 1);
+		free(plugin_path);
+	}
+#endif
 
 	if (opts->filter) {
 		char *filter_str = uftrace_clear_kernel(opts->filter);
