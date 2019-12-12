@@ -364,4 +364,7 @@ struct uftrace_data;
 char *get_event_name(struct uftrace_data *handle, unsigned evt_id);
 char *absolute_dirname(const char *path, char *resolved_path);
 
+struct symtabs;
+char *read_proc_map(FILE *ifp, struct symtabs *symtabs);
+
 #endif /* UFTRACE_UTILS_H */

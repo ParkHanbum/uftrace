@@ -29,65 +29,13 @@ void read_session_map(char *dirname, struct symtabs *symtabs, char *sid)
 {
 	FILE *fp;
 	char buf[PATH_MAX];
-	const char *last_libname = NULL;
-	struct uftrace_mmap **maps = &symtabs->maps;
-	struct uftrace_mmap *last_map = NULL;
 
 	snprintf(buf, sizeof(buf), "%s/sid-%.16s.map", dirname, sid);
 	fp = fopen(buf, "rb");
 	if (fp == NULL)
 		pr_err("cannot open maps file: %s", buf);
 
-	while (fgets(buf, sizeof(buf), fp) != NULL) {
-		uint64_t start, end;
-		char prot[5];
-		char path[PATH_MAX];
-		size_t namelen;
-		struct uftrace_mmap *map;
-
-		/* skip anon mappings */
-		if (sscanf(buf, "%"PRIx64"-%"PRIx64" %s %*x %*x:%*x %*d %s\n",
-			   &start, &end, prot, path) != 4)
-			continue;
-
-		/* skip the [stack] mapping */
-		if (path[0] == '[') {
-			if (strncmp(path, "[stack", 6) == 0)
-				symtabs->kernel_base = guess_kernel_base(buf);
-			continue;
-		}
-
-		/* use first mapping only (even if it's non-exec) */
-		if (last_libname && !strcmp(last_libname, path)) {
-			/* extend last_map to have all segments */
-			last_map->end = end;
-			continue;
-		}
-
-		namelen = ALIGN(strlen(path) + 1, 4);
-
-		map = xzalloc(sizeof(*map) + namelen);
-
-		map->start = start;
-		map->end = end;
-		map->len = namelen;
-
-		memcpy(map->prot, prot, 4);
-		memcpy(map->libname, path, namelen);
-		map->libname[strlen(path)] = '\0';
-
-		/* set mapping of main executable */
-		if (symtabs->exec_map == NULL && symtabs->filename &&
-		    !strcmp(path, symtabs->filename)) {
-			symtabs->exec_map = map;
-		}
-
-		last_libname = map->libname;
-		last_map = map;
-
-		*maps = map;
-		maps = &map->next;
-	}
+	read_proc_map(fp, symtabs);
 	fclose(fp);
 }
 
@@ -654,6 +602,142 @@ struct sym * task_find_sym_addr(struct uftrace_session_link *sessions,
 
 	return sym;
 }
+
+static char *write_str(char *buf, char *str)
+{
+	unsigned int buflen;
+
+	if (buf) {
+		buflen = strlen(buf) + strlen(str) + 1;
+		buf = xrealloc(buf, buflen);
+	}
+	else {
+		buflen = strlen(str) + 1;
+		buf = xmalloc(buflen);
+		memset(buf, 0, buflen);
+	}
+
+	strncpy(buf+strlen(buf), str, strlen(str));
+	buf[buflen-1] = '\0';
+	return buf;
+}
+
+static char *write_map(char *buf, struct uftrace_mmap *map,
+		unsigned char major, unsigned char minor,
+		uint32_t ino, uint64_t off)
+{
+	char line[PATH_MAX];
+
+	/* write prev_map when it finds a new map */
+	sprintf(line, "%"PRIx64"-%"PRIx64" %.4s %08"PRIx64" %02x:%02x %-26u %s\n",
+			map->start, map->end, map->prot, off, major, minor,
+			ino, map->libname);
+	line[strlen(line)] = '\0';
+
+	if (buf)
+		buf = xrealloc(buf, strlen(buf) + strlen(line) + 1);
+	else {
+		buf = xmalloc(strlen(line) + 1);
+		memset(buf, 0, strlen(line) + 1);
+	}
+
+	strncpy(buf+strlen(buf), line, strlen(line)+1);
+	return buf;
+}
+
+char *read_proc_map(FILE *ifp, struct symtabs *symtabs)
+{
+	char buf[PATH_MAX];
+	struct uftrace_mmap *prev_map = NULL;
+	bool prev_written = false;
+	char *pmap = NULL;
+
+	while (fgets(buf, sizeof(buf), ifp)) {
+		unsigned long start, end;
+		char prot[5];
+		unsigned char major, minor;
+		unsigned char prev_major = 0, prev_minor = 0;
+		uint32_t ino, prev_ino = 0;
+		uint64_t off, prev_off = 0;
+		char path[PATH_MAX];
+		size_t namelen;
+		struct uftrace_mmap *map;
+
+		/* skip anon mappings */
+		if (sscanf(buf, "%lx-%lx %s %"SCNx64" %hhx:%hhx %u %s\n",
+			   &start, &end, prot, &off, &major, &minor,
+			   &ino, path) != 8)
+			continue;
+
+		/*
+		 * skip special mappings like [heap], [vdso] etc.
+		 * but [stack] is still needed to get kernel base address.
+		 */
+		if (path[0] == '[') {
+			if (prev_map && !prev_written) {
+				pmap = write_map(pmap, prev_map, prev_major,
+					  prev_minor, prev_ino, prev_off);
+				prev_written = true;
+			}
+			if (strncmp(path, "[stack", 6) == 0) {
+				symtabs->kernel_base = guess_kernel_base(buf);
+				pmap = write_str(pmap, buf);
+			}
+			continue;
+		}
+
+		if (prev_map != NULL) {
+			/* extend prev_map to have all segments */
+			if (!strcmp(path, prev_map->libname)) {
+				prev_map->end = end;
+				if (prot[2] == 'x')
+					memcpy(prev_map->prot, prot, 4);
+				continue;
+			}
+
+			/* write prev_map when it finds a new map */
+			if (!prev_written) {
+				pmap = write_map(pmap, prev_map, prev_major,
+					  prev_minor, prev_ino, prev_off);
+				prev_written = true;
+			}
+		}
+
+		/* save map for the executable */
+		namelen = ALIGN(strlen(path) + 1, 4);
+
+		map = xzalloc(sizeof(*map) + namelen);
+
+		map->start = start;
+		map->end = end;
+		map->len = namelen;
+		memcpy(map->prot, prot, 4);
+		memcpy(map->libname, path, namelen);
+		map->libname[strlen(path)] = '\0';
+
+		/* set mapping of main executable */
+		if (symtabs->exec_map == NULL && symtabs->filename &&
+				!strcmp(path, symtabs->filename)) {
+			symtabs->exec_map = map;
+		}
+
+		if (prev_map)
+			prev_map->next = map;
+		else
+			symtabs->maps = map;
+
+		map->next = NULL;
+		prev_map = map;
+		prev_off = off;
+		prev_ino = ino;
+		prev_major = major;
+		prev_minor = minor;
+		prev_written = false;
+	}
+
+	return pmap;
+}
+
 
 #ifdef UNIT_TEST
 
