@@ -95,6 +95,184 @@ static void setup_child_environ(struct opts *opts)
 	free(libpath);
 }
 
+struct symtabs live_symtabs;
+struct uftrace_record_stack {
+	unsigned int count;
+	struct uftrace_record **stack;
+};
+
+struct uftrace_record_stack rstack;
+struct uftrace_record *lastest_entry;
+
+static void push_rec(struct uftrace_record *rec, struct uftrace_record_stack *stack)
+{
+	pr_dbg("%s] count: %d %lx\n", __func__, stack->count, rec);
+	stack->stack[stack->count++] = rec;
+}
+static struct uftrace_record *pop_rec(struct uftrace_record_stack *stack)
+{
+	pr_dbg("%s] count: %d : %lx\n", __func__, stack->count, stack->stack[stack->count-1]);
+
+	if (stack->count)
+		return stack->stack[--stack->count];
+
+	return NULL;
+}
+
+static struct uftrace_record *top_rec(struct uftrace_record_stack *stack)
+{
+	if (stack->count)
+		return stack->stack[stack->count-1];
+
+	return NULL;
+}
+
+struct uftrace_record_reader {
+	void *data;
+	void *pos;
+	unsigned int len;
+};
+
+struct uftrace_record *next_rec(struct uftrace_record_reader *reader)
+{
+	if (reader->pos + sizeof(struct uftrace_record)
+			<= reader->data + reader->len) {
+		struct uftrace_record *rec;
+		rec = reader->pos + sizeof(struct uftrace_record);
+		return rec;
+	}
+
+	return NULL;
+}
+
+struct uftrace_record *read_rec(struct uftrace_record_reader *reader)
+{
+	if (reader->pos <= reader->data + reader->len) {
+		struct uftrace_record *rec;
+		rec = (struct uftrace_record *)reader->pos;
+		return rec;
+	}
+
+	return NULL;
+}
+
+struct uftrace_record *read_rec_inc(struct uftrace_record_reader *reader)
+{
+	if (reader->pos <= reader->data + reader->len) {
+		struct uftrace_record *rec;
+		rec = (struct uftrace_record *)reader->pos;
+		reader->pos += sizeof(struct uftrace_record);
+		return rec;
+	}
+
+	return NULL;
+}
+
+void live_init_symtabs()
+{
+}
+
+void live_handle_dlopen(char *exename)
+{
+	load_module_symtab(&live_symtabs, exename);
+}
+
+static struct uftrace_record *next_record(struct uftrace_record *curr)
+{
+}
+
+static void handle_uftrace_entry(int tid, struct uftrace_record *curr,
+		struct uftrace_record_reader *reader,
+		struct uftrace_record_stack *stack)
+{
+	struct uftrace_record *prev = top_rec(stack);
+	struct uftrace_record *next = read_rec(reader);
+
+	if (prev && prev->type == UFTRACE_ENTRY)
+		pr_out(" { \n");
+
+	if (next && next->type == UFTRACE_EXIT)
+		pr_dbg("CURRENT : %lx, NEXT : %lx", curr->addr, next->addr);
+	else
+		pr_out(" %10s [%6d] | %*s%lx()", "", tid, 2 * curr->depth, "", curr->addr);
+
+	pr_dbg("%s CURRENT ADDR : %lx \n", __func__, curr->addr);
+
+	push_rec(curr, stack);
+	lastest_entry = curr;
+}
+
+static void handle_uftrace_exit(int tid, struct uftrace_record *curr,
+		struct uftrace_record_reader *reader,
+		struct uftrace_record_stack *stack)
+{
+	struct uftrace_record *prev = pop_rec(stack);
+	uint64_t test = 10928018203821093;
+
+	if (prev && prev->type == UFTRACE_ENTRY && prev == lastest_entry)
+		pr_out(" %7.3f %s [%6d] | %*s%lx();\n",
+				(float)curr->time - (float)prev->time, "us",
+				tid, 2 * curr->depth, "", curr->addr);
+
+	else
+		pr_out(" %7.3f %s [%6d] | %*s}\n",
+				(float)curr->time - (float)prev->time, "us",
+				tid, 2 * curr->depth, "");
+
+
+	pr_dbg("%s CURRENT ADDR : %lx \n", __func__, curr->addr);
+
+}
+
+static void handle_uftrace_lost(int tid, struct uftrace_record *curr,
+		struct uftrace_record_stack *stack)
+{
+	pr_out(" XXX %d: lost %d records\n",
+			tid, (int)curr->addr);
+}
+
+static void handle_uftrace_event(int tid, struct uftrace_record *curr,
+		struct uftrace_record_stack *stack)
+{
+	pr_out("!!! %d: ", tid);
+	// print_event(task, curr, task->event_color);
+	pr_out(" time (%"PRIu64")\n", curr->time);
+}
+
+void print_trace_data(int tid, void *data, size_t len)
+{
+	struct uftrace_record *curr, *prev = NULL;
+	static int count;
+	uint64_t ptime;
+
+	struct uftrace_record_reader reader;
+	reader.data = data;
+	reader.pos = data;
+	reader.len = len;
+
+	while((curr = read_rec_inc(&reader)) != NULL) {
+		switch (curr->type) {
+		case UFTRACE_ENTRY:
+			handle_uftrace_entry(tid, curr, &reader, &rstack);
+			break;
+
+		case UFTRACE_EXIT:
+			handle_uftrace_exit(tid, curr, &reader, &rstack);
+			break;
+
+		case UFTRACE_LOST:
+			handle_uftrace_lost(tid, curr, &rstack);
+			break;
+
+		case UFTRACE_EVENT:
+			handle_uftrace_event(tid, curr, &rstack);
+			break;
+		}
+		prev = curr;
+		curr = (struct uftrace_record *)((uintptr_t)curr + sizeof(*curr));
+	}
+}
+
 int command_live(int argc, char *argv[], struct opts *opts)
 {
 	char template[32] = "/tmp/uftrace-live-XXXXXX";
@@ -103,6 +281,10 @@ int command_live(int argc, char *argv[], struct opts *opts)
 		.sa_flags = SA_RESETHAND,
 	};
 	int ret;
+
+	live_symtabs.dirname = opts->dirname;
+	live_symtabs.flags = SYMTAB_FL_ADJ_OFFSET;
+	rstack.stack = xmalloc(opts->max_stack * sizeof(struct uftrace_record *));
 
 	if (!opts->record) {
 		tmp_dirname = template;
@@ -146,6 +328,7 @@ int command_live(int argc, char *argv[], struct opts *opts)
 	}
 
 	ret = command_record(argc, argv, opts);
+	/*
 	if (!can_skip_replay(opts, ret)) {
 		int ret2;
 
@@ -169,6 +352,7 @@ int command_live(int argc, char *argv[], struct opts *opts)
 		if (ret == UFTRACE_EXIT_SUCCESS)
 			ret = ret2;
 	}
+	*/
 
 	cleanup_tempdir();
 

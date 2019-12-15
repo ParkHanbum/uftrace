@@ -273,6 +273,7 @@ struct opts {
 	bool no_randomize_addr;
 	bool graphviz;
 	bool srcline;
+	bool live;
 	struct uftrace_time_range range;
 	enum uftrace_pattern_type patt_type;
 };
@@ -457,6 +458,8 @@ void send_trace_metadata(int sock, const char *dirname, char *filename);
 void send_trace_info(int sock, struct uftrace_file_header *hdr,
 		     void *info, int len);
 void send_trace_end(int sock);
+void live_handle_dlopen(char *exename);
+void print_trace_data(int tid, void *data, size_t len);
 
 void write_task_info(const char *dirname, struct uftrace_msg_task *tmsg);
 void write_fork_info(const char *dirname, struct uftrace_msg_task *tmsg);

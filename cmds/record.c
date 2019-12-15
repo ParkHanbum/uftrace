@@ -62,6 +62,7 @@ static int thread_ctl[2];
 static bool has_perf_event;
 static bool has_sched_event;
 static bool finish_received;
+static bool live;
 
 static bool can_use_fast_libmcount(struct opts *opts)
 {
@@ -519,6 +520,8 @@ static void write_buffer(struct buf_list *buf, struct opts *opts, int sock)
 {
 	struct mcount_shmem_buffer *shmbuf = buf->shmem_buf;
 
+	if (live)
+		print_trace_data(buf->tid, shmbuf->data, shmbuf->size);
 	if (!opts->host)
 		write_buffer_file(opts->dirname, buf);
 	else
@@ -1253,6 +1256,9 @@ static void read_record_mmap(int pfd, const char *dirname, int bufsize)
 		if (read_all(pfd, exename, dmsg.namelen) < 0)
 			pr_err("reading pipe failed");
 		exename[dmsg.namelen] = '\0';
+
+		if (live)
+			live_handle_dlopen(exename);
 
 		pr_dbg2("MSG DLOPEN: %d: %#lx %s\n", dmsg.task.tid, dmsg.base_addr, exename);
 
@@ -2140,6 +2146,9 @@ int command_record(int argc, char *argv[], struct opts *opts)
 
 	check_binary(opts);
 	check_perf_event(opts);
+
+	// commad_record for live.
+	live = opts->live ? true : false;
 
 	if (!opts->nop) {
 		if (create_directory(opts->dirname) < 0)

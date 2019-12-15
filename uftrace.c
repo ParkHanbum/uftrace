@@ -1184,6 +1184,7 @@ int main(int argc, char *argv[])
 		ret = command_replay(argc, argv, &opts);
 		break;
 	case UFTRACE_MODE_LIVE:
+		opts.live = true;
 		ret = command_live(argc, argv, &opts);
 		break;
 	case UFTRACE_MODE_REPORT:
