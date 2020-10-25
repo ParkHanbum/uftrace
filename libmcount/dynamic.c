@@ -318,10 +318,16 @@ static bool match_pattern_list(struct list_head *patterns,
 	bool ret = false;
 
 	list_for_each_entry(pl, patterns, list) {
+		char *soname = get_soname(map->libname);
 		char *libname = basename(map->libname);
 
-		if (strncmp(libname, pl->module, strlen(pl->module)))
-			continue;
+        if ((soname != NULL && strncmp(soname, pl->module, strlen(pl->module)) == 0)) {}
+            //free(soname);
+        else if (strncmp(libname, pl->module, strlen(pl->module) == 0)) {}
+        else
+            continue;
+
+        pr_dbg("%s %s %s %s matched\n", pl->module, soname, libname, sym_name);
 
 		if (match_filter_pattern(&pl->patt, sym_name))
 			ret = pl->positive;
